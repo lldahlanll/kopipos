@@ -1,0 +1,43 @@
+# Walkthrough: Pengujian Menyeluruh KopiPOS
+
+Proses pengujian akhir sistem KopiPOS telah selesai dilakukan untuk memastikan aplikasi berfungsi 100% tanpa error, dari belakang (Backend API) hingga depan (Frontend UI).
+
+## 1. Automated API Testing (Backend)
+
+Kami mengeksekusi semua endpoints KopiPOS menggunakan script `test_api.sh` yang telah diperbarui agar mendukung fitur *Start Shift* sebelum kasir memproses pesanan. 
+
+**Hasil:** `24 passed, 0 failed` ✅
+
+Berikut adalah rincian fungsionalitas yang diuji dan berhasil:
+- ✅ **Auth:** Login Owner dan Kasir berjalan lancar
+- ✅ **Categories:** Pembuatan dan pengambilan daftar kategori
+- ✅ **Products:** Pembuatan produk lengkap dengan Harga Dasar, Variasi (Ice, Hot, Large), dan Pencarian.
+- ✅ **Modifiers:** Penambahan ekstra seperti 'Extra Shot' dan 'Less Sugar'
+- ✅ **Shifts:** Start Shift (kasir membuka laci) dan End Shift (menutup laci dengan uang aktual)
+- ✅ **Orders:** Checkout order dengan tipe (Dine-in, Takeaway) dan metode pembayaran.
+- ✅ **Reports:** Rekap harian, rangkuman metode pembayaran, dan produk terlaris.
+
+## 2. Unit Testing Pytest
+Kami telah menambahkan tes awal di `backend/tests/test_api.py`. Eksekusi unit test `pytest tests/` mengonfirmasi:
+- Proteksi Endpoint
+- Validasi Kesehatan Server (Healthcheck)
+
+## 3. End-to-End Frontend Testing (Browser Subagent)
+Kami telah menugaskan sebuah **AI Browser Subagent** untuk mengoperasikan antarmuka Frontend secara langsung layaknya manusia.
+
+**Skenario yang Berhasil Dijalankan:**
+1. **[Owner]** Login ke sistem (`owner@kopipos.com`)
+2. **[Owner]** Masuk ke Menu > Kategori dan menambahkan Kategori **"Dessert"**
+3. **[Owner]** Menambahkan Produk **"Tiramisu"** (Rp 30.000) ke Kategori Dessert
+4. **[Owner]** Logout
+5. **[Cashier]** Login ke sistem (`kasir@kopipos.com`)
+6. **[Cashier]** Membuka laci kasir (Start Shift) dengan modal Rp 200.000
+7. **[Cashier]** Menambahkan 1 buah "Tiramisu" ke keranjang dan menekan Bayar (Takeaway, Tunai)
+8. **[Cashier]** Menutup laci kasir (End Shift) dan menyetorkan uang aktual Rp 230.000.
+
+### 🎥 Rekaman Skenario UI (WebP Video)
+Berikut adalah rekaman nyata pengoperasian aplikasi KopiPOS oleh bot tester kami:
+![KopiPOS E2E Test Recording](/Users/ephinu/.gemini/antigravity-ide/brain/e41c8fa1-8340-4230-ac51-36e14b1aeaae/kopipos_e2e_test_1781156059806.webp)
+
+> [!TIP]
+> Aplikasi Anda saat ini berjalan dengan sangat baik dan seluruh *critical path* (Auth -> Shift -> Order -> Rekap) berfungsi tanpa hambatan! Anda dapat mematikan server lokal yang sedang berjalan di terminal Anda menggunakan `CTRL+C` jika sudah tidak dibutuhkan.

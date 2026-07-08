@@ -1,0 +1,10 @@
+node_modules
+npm-debug.log
+.DS_Store
+.env
+backend/__pycache__
+backend/.pytest_cache
+backend/.venv
+backend/venv
+frontend/dist
+frontend/node_modules

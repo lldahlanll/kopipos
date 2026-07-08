@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:16
+    container_name: kopipos_db
+    restart: always
+    environment:
+      POSTGRES_DB: kopipos
+      POSTGRES_USER: kopipos
+      POSTGRES_PASSWORD: k0p!p0s.Eph!nu.my.!d
+    ports:
+      - "5432:5432"
+    volumes:
+      - kopipos_postgres_data:/var/lib/postgresql/data
+    networks:
+      - kopipos_internal
+
+  backend:
+    build:
+      context: ./backend
+    container_name: kopipos_backend
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    networks:
+      - kopipos_internal
+      - shared_network
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: https://kopipos-api.ephinu.my.id 
+        VITE_API_BASE: https://kopipos-api.ephinu.my.id/api
+    container_name: kopipos_frontend
+    restart: always
+    expose:
+      - "80"
+    depends_on:
+      - backend
+    networks:
+      - shared_network
+
+volumes:
+  kopipos_postgres_data:
+
+networks:
+  kopipos_internal:
+    driver: bridge
+
+  shared_network:
+    external: true
