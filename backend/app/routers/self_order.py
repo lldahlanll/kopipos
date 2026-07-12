@@ -281,9 +281,9 @@ def create_self_order(
 
     final_total = max(subtotal - discount_val, 0.0)
 
-    # Deduct redeemed points and add earned points (1 point per 10k final paid total)
+    # Deduct redeemed points immediately to lock them, but do NOT add earned points yet
     earned_points = int(final_total // 10000)
-    current_member.points = current_member.points - redeem_points_actual + earned_points
+    current_member.points = current_member.points - redeem_points_actual
 
     order = Order(
         order_number=_gen_order_num(db),
@@ -296,7 +296,9 @@ def create_self_order(
         subtotal=subtotal,
         discount=discount_val,
         total=final_total,
-        member_id=current_member.id
+        member_id=current_member.id,
+        points_redeemed=redeem_points_actual,
+        points_earned=earned_points
     )
     db.add(order)
     db.flush()
@@ -415,6 +417,10 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
     if transaction_status in ("settlement", "capture"):
         if order.status == "pending":
             order.status = "confirmed"
+            # Add earned points to member
+            if order.member_id and order.points_earned > 0:
+                if order.member:
+                    order.member.points += order.points_earned
             log_paid = OrderAuditLog(
                 order_id=order.id,
                 event="payment_success",
@@ -424,6 +430,10 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
     elif transaction_status in ("deny", "expire", "cancel"):
         if order.status == "pending":
             order.status = "cancelled"
+            # Refund redeemed points back to member
+            if order.member_id and order.points_redeemed > 0:
+                if order.member:
+                    order.member.points += order.points_redeemed
             log_failed = OrderAuditLog(
                 order_id=order.id,
                 event="payment_failed",

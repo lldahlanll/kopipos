@@ -182,6 +182,8 @@ class Order(Base):
     is_reviewed = Column(Boolean, default=False)
     payment_token = Column(String(100), nullable=True)
     payment_url = Column(String(255), nullable=True)
+    points_redeemed = Column(Integer, default=0, nullable=False)
+    points_earned = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
     cashier = relationship("User", foreign_keys=[cashier_id])

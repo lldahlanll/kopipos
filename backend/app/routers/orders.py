@@ -87,7 +87,8 @@ def list_orders(
     )
     
     if current_user.role == 'cashier':
-        q = q.filter(Order.cashier_id == current_user.id)
+        from sqlalchemy import or_
+        q = q.filter(or_(Order.cashier_id == current_user.id, Order.source == "self_order"))
         # Cashier is locked to the last 7 days of transactions
         seven_days_ago = datetime.now().date() - timedelta(days=7)
         seven_days_ago_dt = datetime(seven_days_ago.year, seven_days_ago.month, seven_days_ago.day, 0, 0, 0)
@@ -129,7 +130,11 @@ def get_active_orders(db: Session = Depends(get_db), current_user: User = Depend
 @router.get("/incoming/pending", response_model=List[OrderListResponse])
 def get_incoming_orders(db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     """Ambil order self-order yang belum dikonfirmasi kasir."""
-    return db.query(Order).filter(Order.status == "pending", Order.source == "self_order").order_by(Order.created_at.asc()).all()
+    return db.query(Order).filter(
+        Order.status == "pending",
+        Order.source == "self_order",
+        Order.payment_method == "cashier"
+    ).order_by(Order.created_at.asc()).all()
 
 @router.post("/bulk-review")
 def bulk_review(payload: BulkReviewRequest, db: Session = Depends(get_db), current_user: User = Depends(require_owner)):
@@ -161,7 +166,10 @@ def get_order(id: int, db: Session = Depends(get_db), current_user: User = Depen
 
 @router.patch("/{id}/confirm", response_model=OrderResponse)
 def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
-    order = db.query(Order).options(joinedload(Order.items)).filter(Order.id == id, Order.status == "pending").first()
+    order = db.query(Order).options(
+        joinedload(Order.items),
+        joinedload(Order.member)
+    ).filter(Order.id == id, Order.status == "pending").first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan atau sudah diproses")
     
@@ -170,6 +178,10 @@ def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = D
         raise HTTPException(status_code=400, detail="Shift belum dibuka (No active shift)")
 
     order.status = "confirmed"
+    # Add earned points to member
+    if order.member_id and order.points_earned > 0:
+        if order.member:
+            order.member.points += order.points_earned
     order.cashier_id = current_user.id
     order.shift_id = active_shift.id
     db.commit()
@@ -182,17 +194,46 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail="Status tidak valid")
     
-    order = db.query(Order).options(joinedload(Order.items)).filter(Order.id == id).first()
+    order = db.query(Order).options(
+        joinedload(Order.items),
+        joinedload(Order.member)
+    ).filter(Order.id == id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
 
-    # H-2: cashier may only update orders assigned to them
-    if current_user.role == "cashier" and order.cashier_id != current_user.id:
+    # H-2: cashier may only update orders assigned to them (except if cashier is not assigned yet, i.e. None, e.g. for self-orders)
+    if current_user.role == "cashier" and order.cashier_id is not None and order.cashier_id != current_user.id:
         raise HTTPException(status_code=403, detail="Tidak diizinkan mengubah order ini")
     if current_user.role == "kitchen" and status not in {"preparing", "ready", "paid"}:
         raise HTTPException(status_code=403, detail="Peran dapur hanya diizinkan memperbarui status ke preparing, ready, atau paid")
     
+    old_status = order.status
     order.status = status
+    
+    # Handle points modification on status transition
+    if order.member_id and order.member:
+        PAID_STATUSES = {"confirmed", "preparing", "ready", "paid"}
+        
+        # Transitioning from pending to paid
+        if old_status == "pending" and status in PAID_STATUSES:
+            order.member.points += order.points_earned
+            
+        # Transitioning from paid to cancelled/voided/refunded
+        elif old_status in PAID_STATUSES and status in {"cancelled", "voided", "refunded"}:
+            order.member.points = order.member.points + order.points_redeemed - order.points_earned
+            
+        # Transitioning from pending to cancelled/voided/refunded
+        elif old_status == "pending" and status in {"cancelled", "voided", "refunded"}:
+            order.member.points += order.points_redeemed
+            
+    # If the cashier is marking a self-order (e.g. QRIS) as "paid" (completed/handed over) and there's no cashier assigned yet,
+    # assign this cashier and their open shift to this order so it is correctly recorded.
+    if current_user.role == "cashier" and status == "paid" and not order.cashier_id:
+        order.cashier_id = current_user.id
+        active_shift = db.query(Shift).filter(Shift.cashier_id == current_user.id, Shift.status == "open").first()
+        if active_shift:
+            order.shift_id = active_shift.id
+            
     db.commit()
     db.refresh(order)
     return order
@@ -201,7 +242,8 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
 def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     order = db.query(Order).options(
         joinedload(Order.shift),
-        joinedload(Order.refunds)
+        joinedload(Order.refunds),
+        joinedload(Order.member)
     ).filter(Order.id == id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
@@ -219,8 +261,17 @@ def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db)
     if order.shift and order.shift.status != "open":
         raise HTTPException(status_code=400, detail="Void hanya diizinkan sebelum shift ditutup")
         
+    old_status = order.status
     order.status = "voided"
     
+    # Handle points modification
+    if order.member_id and order.member:
+        PAID_STATUSES = {"confirmed", "preparing", "ready", "paid"}
+        if old_status == "pending":
+            order.member.points += order.points_redeemed
+        elif old_status in PAID_STATUSES:
+            order.member.points = order.member.points + order.points_redeemed - order.points_earned
+            
     # Audit log
     log = OrderAuditLog(
         order_id=order.id,
@@ -238,7 +289,8 @@ def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db)
 def refund_order(id: int, payload: OrderRefundRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     order = db.query(Order).options(
         joinedload(Order.items),
-        joinedload(Order.refunds).joinedload(OrderRefund.items)
+        joinedload(Order.refunds).joinedload(OrderRefund.items),
+        joinedload(Order.member)
     ).filter(Order.id == id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
@@ -345,6 +397,9 @@ def refund_order(id: int, payload: OrderRefundRequest, db: Session = Depends(get
         
     if total_remaining_qty == 0:
         order.status = "refunded"
+        # Refund points_redeemed and deduct points_earned
+        if order.member_id and order.member:
+            order.member.points = order.member.points + order.points_redeemed - order.points_earned
     else:
         order.status = "partially_refunded"
         

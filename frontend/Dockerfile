@@ -1,5 +1,13 @@
 FROM node:20-alpine AS build
 WORKDIR /app
+
+# 1. Declare build args (harus sebelum RUN npm run build) 
+# Docker file jangan di timpa dengna local
+ARG VITE_API_URL
+ARG VITE_API_BASE
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_API_BASE=$VITE_API_BASE
+
 COPY package*.json ./
 RUN npm ci
 COPY . .
