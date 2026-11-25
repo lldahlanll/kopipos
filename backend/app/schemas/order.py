@@ -15,7 +15,9 @@ class OrderCreate(BaseModel):
     payment_method: str
     customer_name: Optional[str] = None
     notes: Optional[str] = None
+    # Diskon manual tidak lagi diterima (harus 0) — pakai promo_id.
     discount: Optional[float] = 0
+    promo_id: Optional[int] = None
     items: List[OrderItemCreate]
 
     @field_validator("discount")
@@ -103,6 +105,7 @@ class OrderResponse(BaseModel):
     source: Optional[str] = "cashier"
     subtotal: float
     discount: float
+    promo_name: Optional[str] = None
     total: float
     status: str
     created_at: Optional[datetime] = None

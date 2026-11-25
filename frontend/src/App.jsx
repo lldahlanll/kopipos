@@ -8,6 +8,8 @@ import POS from './pages/POS';
 import MenuManagement from './pages/MenuManagement';
 import Categories from './pages/Categories';
 import Modifiers from './pages/Modifiers';
+import Promos from './pages/Promos';
+import { homePathForRole } from './utils/roles';
 import Transactions from './pages/Transactions';
 import TransactionDetail from './pages/TransactionDetail';
 import Settings from './pages/Settings';
@@ -30,9 +32,7 @@ function ProtectedRoute({ children, allowedRoles }) {
   }
 
   if (allowedRoles && !allowedRoles.includes(user.role)) {
-    if (user.role === 'owner') return <Navigate to="/dashboard" replace />;
-    if (user.role === 'kitchen') return <Navigate to="/kitchen" replace />;
-    return <Navigate to="/pos" replace />;
+    return <Navigate to={homePathForRole(user.role)} replace />;
   }
 
   return children;
@@ -47,12 +47,12 @@ function AppRoutes() {
 
   return (
     <Routes>
-      <Route path="/login" element={user ? <Navigate to={user.role === 'owner' ? '/dashboard' : user.role === 'kitchen' ? '/kitchen' : '/pos'} replace /> : <Login />} />
+      <Route path="/login" element={user ? <Navigate to={homePathForRole(user.role)} replace /> : <Login />} />
 
       <Route path="/" element={
         <ProtectedRoute><Layout /></ProtectedRoute>
       }>
-        <Route index element={<Navigate to={user?.role === 'owner' ? '/dashboard' : user?.role === 'kitchen' ? '/kitchen' : '/pos'} replace />} />
+        <Route index element={<Navigate to={homePathForRole(user?.role)} replace />} />
         <Route path="dashboard" element={
           <ProtectedRoute allowedRoles={['owner']}><Dashboard /></ProtectedRoute>
         } />
@@ -64,6 +64,9 @@ function AppRoutes() {
         } />
         <Route path="modifiers" element={
           <ProtectedRoute allowedRoles={['owner']}><Modifiers /></ProtectedRoute>
+        } />
+        <Route path="promos" element={
+          <ProtectedRoute allowedRoles={['owner', 'promo']}><Promos /></ProtectedRoute>
         } />
         <Route path="transactions" element={
           <ProtectedRoute allowedRoles={['owner', 'cashier']}><Transactions /></ProtectedRoute>

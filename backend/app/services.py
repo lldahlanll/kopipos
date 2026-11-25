@@ -2,7 +2,10 @@ from typing import List, Tuple
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
-from app.models import Product, Modifier, ModifierGroup, Order, OrderItem, OrderItemModifier, OrderAuditLog
+import math
+from datetime import datetime
+from typing import Optional
+from app.models import Product, Modifier, ModifierGroup, Order, OrderItem, OrderItemModifier, OrderAuditLog, Promo
 from app.utils.order import gen_order_num as _gen_order_num
 
 class ValidationService:
@@ -124,9 +127,61 @@ class PricingService:
         return final_discount, total
 
 
+def _as_local_aware(dt: Optional[datetime]) -> Optional[datetime]:
+    """Datetime dari DB bisa naive (SQLite) atau aware (PostgreSQL); samakan ke aware."""
+    if dt is None:
+        return None
+    return dt.astimezone() if dt.tzinfo is None else dt
+
+
+class PromoService:
+    @staticmethod
+    def is_running(promo: Promo, now: Optional[datetime] = None) -> bool:
+        now = now or datetime.now().astimezone()
+        if not promo.is_active:
+            return False
+        starts, ends = _as_local_aware(promo.starts_at), _as_local_aware(promo.ends_at)
+        if starts and now < starts:
+            return False
+        if ends and now > ends:
+            return False
+        return True
+
+    @staticmethod
+    def calculate_discount(promo: Promo, subtotal: float, enforce_schedule: bool = True) -> float:
+        """Hitung diskon Rp dari promo. HTTP 400 jika promo tidak berlaku untuk order ini."""
+        if enforce_schedule and not PromoService.is_running(promo):
+            raise HTTPException(status_code=400, detail=f"Promo '{promo.name}' sedang tidak berlaku")
+        if subtotal < (promo.min_purchase or 0):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Promo '{promo.name}' butuh minimal belanja Rp {promo.min_purchase:,.0f}",
+            )
+        if promo.discount_type == "percent":
+            discount = subtotal * promo.value / 100.0
+            if promo.max_discount:
+                discount = min(discount, promo.max_discount)
+        else:
+            discount = promo.value
+        # Pembulatan setengah ke atas, sama dengan Math.round di POS (utils/promo.js)
+        return float(math.floor(min(discount, subtotal) + 0.5))
+
+
 class OrderService:
     @staticmethod
-    def create_order(data, cashier_id: int, shift_id: int, db: Session) -> Order:
+    def create_order(data, cashier_id: int, shift_id: int, db: Session, enforce_promo_schedule: bool = True) -> Order:
+        # 0. Diskon hanya lewat promo yang diatur Owner / tim Promo
+        if data.discount and data.discount > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Diskon manual tidak diizinkan. Pilih promo yang sudah diatur Owner atau tim Promo.",
+            )
+        promo = None
+        if data.promo_id is not None:
+            promo = db.query(Promo).filter(Promo.id == data.promo_id).first()
+            if not promo:
+                raise HTTPException(status_code=400, detail="Promo tidak ditemukan")
+
         # 1. Validation
         products, modifiers = ValidationService.validate_order_items(data.items, db)
         
@@ -169,8 +224,9 @@ class OrderService:
             
             order_items.append(oi)
             
-        # Calculate final totals
-        discount, total = PricingService.calculate_order_totals(subtotal, data.discount or 0.0)
+        # Calculate final totals (diskon dihitung server dari promo, bukan dari klien)
+        promo_discount = PromoService.calculate_discount(promo, subtotal, enforce_promo_schedule) if promo else 0.0
+        discount, total = PricingService.calculate_order_totals(subtotal, promo_discount)
         
         # Create Order object
         order = Order(
@@ -183,7 +239,9 @@ class OrderService:
             subtotal=subtotal,
             discount=discount,
             total=total,
-            status="paid"
+            status="paid",
+            promo_id=promo.id if promo else None,
+            promo_name=promo.name if promo else None,
         )
         
         # Retry logic for concurrent duplicate order_number
@@ -211,6 +269,7 @@ class OrderService:
             event="created",
             cashier_id=cashier_id,
             details=f"Order created with type: {order.order_type.upper().replace('_', ' ')}"
+                    + (f". Promo: {promo.name} (−Rp {discount:,.0f})" if promo else "")
         )
         log_paid = OrderAuditLog(
             order_id=order.id,

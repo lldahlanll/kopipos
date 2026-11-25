@@ -7,6 +7,7 @@ import { getActiveShift, startShift, endShift } from '../api/shifts';
 import { createOrder } from '../api/orders';
 import { createExpense } from '../api/expenses';
 import client from '../api/client';
+import { calcPromoDiscount } from '../utils/promo';
 import {
   saveOfflineOrder,
   getOfflineQueue,
@@ -41,7 +42,9 @@ export function POSProvider({ children }) {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [customerName, setCustomerName] = useState('');
   const [notes, setNotes] = useState('');
-  const [discount, setDiscount] = useState(0); // nominal Rp
+  // Diskon hanya lewat promo yang diatur Owner / tim Promo; nominalnya dihitung
+  // dari promo (lihat `discount` di bawah) dan dihitung ulang oleh server.
+  const [selectedPromo, setSelectedPromo] = useState(null);
 
   const [activeShift, setActiveShift] = useState(null);
   const [shiftLoading, setShiftLoading] = useState(true);
@@ -222,6 +225,10 @@ export function POSProvider({ children }) {
       toast.error("Keranjang kosong!");
       return;
     }
+    if (promoError) {
+      toast.error(`Promo ${selectedPromo.name}: ${promoError}`);
+      return;
+    }
     // Lapisan 1: Guard instan — blokir sebelum React sempat re-render
     if (isSubmitting || isSubmittingRef.current) return;
     isSubmittingRef.current = true;
@@ -232,7 +239,7 @@ export function POSProvider({ children }) {
       payment_method: paymentMethod,
       customer_name: customerName || null,
       notes: notes || null,
-      discount: discount || 0,
+      promo_id: selectedPromo ? selectedPromo.id : null,
       items: cart.map(item => ({
         product_id: item.product_id,
         quantity: item.quantity,
@@ -270,7 +277,7 @@ export function POSProvider({ children }) {
         setCart([]);
         setCustomerName('');
         setNotes('');
-        setDiscount(0);
+        setSelectedPromo(null);
         toast.success(`Order disimpan offline (${queuedItem.tmpId})`, { duration: 5000 });
       } catch (err) {
         toast.error(err.message || 'Gagal menyimpan order offline');
@@ -289,7 +296,7 @@ export function POSProvider({ children }) {
       setCart([]);
       setCustomerName('');
       setNotes('');
-      setDiscount(0);
+      setSelectedPromo(null);
       // Generate UUID baru untuk sesi checkout berikutnya
       checkoutKeyRef.current = crypto.randomUUID();
       toast.success("Order berhasil dibuat!");
@@ -415,12 +422,10 @@ export function POSProvider({ children }) {
   const cartTotal = useMemo(() => cart.reduce((sum, item) => sum + item.subtotal, 0), [cart]);
   const cartCount = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
   
-  useEffect(() => {
-    if (discount > 0 && cartTotal < discount) {
-      setDiscount(0);
-    }
-  }, [cartTotal, discount]);
-
+  const { discount, error: promoError } = useMemo(
+    () => calcPromoDiscount(selectedPromo, cartTotal),
+    [selectedPromo, cartTotal]
+  );
   const cartFinalTotal = Math.max(cartTotal - discount, 0);
 
 
@@ -521,7 +526,7 @@ export function POSProvider({ children }) {
       search, setSearch,
       filteredProducts,
       cart, addToCart, updateQty, removeItem, cartTotal, cartCount, cartFinalTotal,
-      discount, setDiscount,
+      discount, selectedPromo, setSelectedPromo, promoError,
       orderType, setOrderType,
       paymentMethod, setPaymentMethod,
       customerName, setCustomerName,

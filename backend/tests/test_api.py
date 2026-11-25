@@ -995,3 +995,89 @@ def test_unpaid_qris_self_order_cannot_be_confirmed_by_cashier():
     r = client.patch(f"/api/orders/{order['id']}/confirm", headers=headers)
     assert r.status_code == 400
     assert "QRIS belum dibayar" in r.json()["detail"]
+
+
+# ── Promo: diskon hanya lewat promo yang diatur Owner / tim Promo ───────────
+
+def _headers_for(email, role):
+    u = get_or_create_test_user(email, role)
+    return {"Authorization": f"Bearer {create_access_token(data={'sub': str(u.id), 'role': role})}"}
+
+
+def test_only_owner_and_promo_role_can_manage_promos():
+    payload = {"name": "Diskon Pagi", "discount_type": "percent", "value": 10}
+    cashier = _headers_for("test_cashier_promo@kopipos.com", "cashier")
+    promo_team = _headers_for("test_promo_team@kopipos.com", "promo")
+    owner = _headers_for("test_owner_promo@kopipos.com", "owner")
+
+    assert client.post("/api/promos", json=payload, headers=cashier).status_code == 403
+    assert client.get("/api/promos", headers=cashier).status_code == 403
+    r = client.post("/api/promos", json=payload, headers=promo_team)
+    assert r.status_code == 201, r.json()
+    pid = r.json()["id"]
+    assert client.put(f"/api/promos/{pid}", json={"value": 15}, headers=owner).json()["value"] == 15
+    # Tim promo tidak punya akses ke POS / data lain
+    assert client.get("/api/categories", headers=promo_team).status_code == 403
+    assert client.get("/api/users", headers=promo_team).status_code == 403
+    # Validasi nilai
+    assert client.post("/api/promos", json={**payload, "value": 150}, headers=owner).status_code == 422
+    assert client.put(f"/api/promos/{pid}", json={"value": 0}, headers=owner).status_code == 422
+
+
+def test_pos_order_discount_only_via_running_promo():
+    from datetime import datetime, timedelta
+    _, headers, _ = _fresh_cashier_with_shift("test_cashier_promo_order@kopipos.com")
+    owner = _headers_for("test_owner_promo2@kopipos.com", "owner")
+    item = _first_product_item(2)
+    base = {"order_type": "takeaway", "payment_method": "cash", "items": [item]}
+
+    # Diskon manual ditolak
+    r = client.post("/api/orders", json={**base, "discount": 5000}, headers=headers)
+    assert r.status_code == 400 and "Diskon manual" in r.json()["detail"]
+
+    plain = client.post("/api/orders", json=base, headers=headers).json()
+    subtotal = plain["subtotal"]
+
+    # Promo 50% dengan batas Rp 3.000
+    p = client.post("/api/promos", json={"name": "Setengah Harga", "discount_type": "percent",
+                                         "value": 50, "max_discount": 3000}, headers=owner).json()
+    assert p["is_running"] is True
+    avail = [x["id"] for x in client.get("/api/promos/available", headers=headers).json()]
+    assert p["id"] in avail
+    r = client.post("/api/orders", json={**base, "promo_id": p["id"]}, headers=headers)
+    assert r.status_code == 201, r.json()
+    assert r.json()["discount"] == min(3000, int(subtotal * 0.5 + 0.5))
+    assert r.json()["total"] == subtotal - r.json()["discount"]
+    assert r.json()["promo_name"] == "Setengah Harga"
+
+    # Minimal belanja
+    big = client.post("/api/promos", json={"name": "Belanja Besar", "discount_type": "nominal", "value": 1000,
+                                           "min_purchase": subtotal + 1}, headers=owner).json()
+    r = client.post("/api/orders", json={**base, "promo_id": big["id"]}, headers=headers)
+    assert r.status_code == 400 and "minimal belanja" in r.json()["detail"]
+
+    # Promo kedaluwarsa & nonaktif tidak bisa dipakai, dan tidak muncul di daftar kasir
+    past = datetime.now() - timedelta(days=2)
+    expired = client.post("/api/promos", json={"name": "Kemarin", "discount_type": "nominal", "value": 1000,
+                                               "starts_at": past.isoformat(),
+                                               "ends_at": (past + timedelta(days=1)).isoformat()},
+                          headers=owner).json()
+    assert expired["is_running"] is False
+    off = client.put(f"/api/promos/{p['id']}", json={"is_active": False}, headers=owner).json()
+    assert off["is_running"] is False
+    avail = [x["id"] for x in client.get("/api/promos/available", headers=headers).json()]
+    assert expired["id"] not in avail and p["id"] not in avail
+    for pid in (expired["id"], p["id"]):
+        r = client.post("/api/orders", json={**base, "promo_id": pid}, headers=headers)
+        assert r.status_code == 400 and "tidak berlaku" in r.json()["detail"]
+
+    # Order offline yang dibuat saat promo masih berlaku tetap bisa disinkron
+    from app.limiter import limiter
+    limiter.reset()
+    r = client.post("/api/orders/bulk-sync", json=[{"tmp_id": "TMP-1", "order": {**base, "promo_id": expired["id"]}}],
+                    headers=headers)
+    assert r.status_code == 200 and r.json()[0]["success"] is True, r.json()
+
+    # Promo yang sudah dipakai tidak bisa dihapus
+    assert client.delete(f"/api/promos/{p['id']}", headers=owner).status_code == 400
+    assert client.delete(f"/api/promos/{big['id']}", headers=owner).status_code == 200

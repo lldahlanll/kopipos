@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.database import engine, Base
-from app.routers import auth, categories, products, modifiers, orders, reports, shifts, settings, users, self_order, member
+from app.routers import auth, categories, products, modifiers, orders, reports, shifts, settings, users, self_order, member, promos
 from app.routers import print_router
 from app.routers import sync as sync_router
 from app.seed import seed_admin
@@ -71,6 +71,17 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             conn.rollback()
             print(f"[KopiPOS] idempotency_keys migration note: {e}")
+
+        # Promo pada order (tabel promos dibuat oleh create_all di atas)
+        for ddl in (
+            "ALTER TABLE orders ADD COLUMN promo_id INTEGER REFERENCES promos(id) ON DELETE SET NULL",
+            "ALTER TABLE orders ADD COLUMN promo_name VARCHAR(100)",
+        ):
+            try:
+                conn.execute(text(ddl))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # kolom sudah ada
 
         # PIN supervisor: perlebar kolom agar muat hash bcrypt (60 karakter)
         if engine.dialect.name == "postgresql":
@@ -161,6 +172,7 @@ app.include_router(print_router.router)
 app.include_router(self_order.router)
 app.include_router(member.router)
 app.include_router(sync_router.router)
+app.include_router(promos.router)
 
 @app.get("/api/health", tags=["Health"])
 def health():

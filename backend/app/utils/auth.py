@@ -81,6 +81,8 @@ def require_roles(allowed_roles: list[str]):
 
 
 require_pos_access = require_roles(["owner", "cashier"])
+# Pengatur promo/diskon: Owner (kepala toko) dan tim Promo
+require_promo_manager = require_roles(["owner", "promo"])
 
 
 # ── PIN Supervisor ───────────────────────────────────────────────────────────

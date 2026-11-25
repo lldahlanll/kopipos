@@ -61,7 +61,9 @@ def bulk_sync_orders(
                 raise ValueError("Shift belum dibuka (No active shift)")
             
             # Delegate order creation to OrderService to apply all validation rules & snapshooting
-            order = OrderService.create_order(data, cashier_id=current_user.id, shift_id=active_shift.id, db=db)
+            # Order offline: promo dicek berlaku saat kasir membuat order, bukan saat sinkron
+            order = OrderService.create_order(data, cashier_id=current_user.id, shift_id=active_shift.id, db=db,
+                                              enforce_promo_schedule=False)
             
             results.append(
                 BulkSyncResult(

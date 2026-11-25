@@ -182,6 +182,23 @@ class Shift(Base):
         """Uang yang seharusnya ada di laci: modal + penjualan tunai − refund tunai − pengeluaran."""
         return self.opening_balance + self.cash_sales - self.cash_refunds - self.total_expenses
 
+class Promo(Base):
+    """Promo/diskon yang diatur Owner atau tim Promo; kasir hanya bisa memilihnya."""
+    __tablename__ = "promos"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), nullable=False)
+    discount_type = Column(String(10), nullable=False)  # "percent" | "nominal"
+    value = Column(Float, nullable=False)                # persen (1–100) atau Rupiah
+    max_discount = Column(Float, nullable=True)          # batas Rp untuk diskon persen
+    min_purchase = Column(Float, nullable=False, default=0.0)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class ShiftExpense(Base):
     __tablename__ = "shift_expenses"
     id = Column(Integer, primary_key=True, index=True)
@@ -214,6 +231,10 @@ class Order(Base):
     payment_url = Column(String(255), nullable=True)
     points_redeemed = Column(Integer, default=0, nullable=False)
     points_earned = Column(Integer, default=0, nullable=False)
+    # Promo yang dipakai (diskon POS hanya boleh lewat promo). promo_name = snapshot
+    # nama saat transaksi, agar riwayat tetap benar meski promo diubah/dihapus.
+    promo_id = Column(Integer, ForeignKey("promos.id", ondelete="SET NULL"), nullable=True)
+    promo_name = Column(String(100), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     
     cashier = relationship("User", foreign_keys=[cashier_id])

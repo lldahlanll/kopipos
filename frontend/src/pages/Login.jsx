@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import { login } from '../api/auth';
+import { homePathForRole } from '../utils/roles';
 import { Coffee } from 'lucide-react';
 
 export default function Login() {
@@ -22,7 +23,7 @@ export default function Login() {
       const res = await login(email, password);
       loginUser(res.data.access_token, res.data.user);
       await refreshSettings();
-      navigate(res.data.user.role === 'owner' ? '/dashboard' : '/pos');
+      navigate(homePathForRole(res.data.user.role));
     } catch (err) {
       setError(err.response?.data?.detail || 'Login gagal');
     } finally {

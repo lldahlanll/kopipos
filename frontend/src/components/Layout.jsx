@@ -4,7 +4,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSettings } from '../context/SettingsContext';
 import {
   LayoutDashboard, ShoppingCart, Coffee, Tag,
-  Receipt, Settings, LogOut, Sliders, Users, Calendar, Monitor, Menu, X
+  Receipt, Settings, LogOut, Sliders, Users, Calendar, Monitor, Menu, X, BadgePercent
 } from 'lucide-react';
 
 export default function Layout() {
@@ -27,6 +27,7 @@ export default function Layout() {
     { to: '/menu',         icon: <Coffee size={20} />,          label: 'Daftar Menu' },
     { to: '/categories',   icon: <Tag size={20} />,             label: 'Kategori Menu' },
     { to: '/modifiers',    icon: <Sliders size={20} />,         label: 'Topping & Ekstra' },
+    { to: '/promos',       icon: <BadgePercent size={20} />,    label: 'Promo & Diskon' },
     { to: '/transactions', icon: <Receipt size={20} />,         label: 'Riwayat Transaksi' },
     { to: '/shifts',       icon: <Calendar size={20} />,        label: 'Riwayat Shift' },
     { to: '/users',        icon: <Users size={20} />,           label: 'Pegawai' },
@@ -38,7 +39,12 @@ export default function Layout() {
     { to: '/transactions', icon: <Receipt size={20} />,      label: 'Transaksi' },
   ];
 
-  const links = user?.role === 'owner' ? ownerLinks : cashierLinks;
+  // Tim Promo hanya mengelola promo — tidak punya akses POS, laporan, atau data lain
+  const promoLinks = [
+    { to: '/promos',       icon: <BadgePercent size={20} />, label: 'Promo & Diskon' },
+  ];
+
+  const links = user?.role === 'owner' ? ownerLinks : user?.role === 'promo' ? promoLinks : cashierLinks;
   const location = useLocation();
   const currentLink = links.find(l => location.pathname.startsWith(l.to)) || { label: storeName };
 

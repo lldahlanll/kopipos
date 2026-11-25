@@ -210,6 +210,7 @@ export default function Users() {
                     >
                       <option value="cashier">Kasir</option>
                       <option value="kitchen">Dapur (Kitchen)</option>
+                      <option value="promo">Tim Promo</option>
                       <option value="owner">Owner</option>
                     </select>
                   </div>

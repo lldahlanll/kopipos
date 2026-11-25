@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ShoppingCart, Minus, Plus, Trash2, CheckCircle,
   LogOut, Receipt, Tag, CreditCard, Banknote, QrCode
@@ -6,6 +6,8 @@ import {
 import { usePOS } from '../../context/POSContext';
 import { formatRupiah } from '../../utils/format';
 import SplitBillModal from './SplitBillModal';
+import { getAvailablePromos } from '../../api/promos';
+import { describePromo } from '../../utils/promo';
 
 const QUICK_AMOUNTS = [5000, 10000, 20000, 50000, 100000];
 
@@ -28,13 +30,22 @@ export default function CartSidebar({ onEndShiftClick, onExpenseClick, onCheckou
     paymentMethod, setPaymentMethod,
     customerName, setCustomerName,
     notes, setNotes,
-    discount, setDiscount,
+    discount, selectedPromo, setSelectedPromo, promoError,
     handleCheckout, isSubmitting
   } = usePOS();
 
   const [cashReceived, setCashReceived] = useState('');
-  const [discountInput, setDiscountInput] = useState('');
-  const [discountType, setDiscountType] = useState('nominal');
+  const [promos, setPromos] = useState([]);
+
+  // Promo yang sedang berlaku (diatur Owner / tim Promo). Kasir hanya memilih.
+  const loadPromos = () => getAvailablePromos()
+    .then(r => {
+      setPromos(r.data);
+      // Promo terpilih sudah tidak berlaku lagi → lepaskan
+      if (selectedPromo && !r.data.some(p => p.id === selectedPromo.id)) setSelectedPromo(null);
+    })
+    .catch(() => {}); // offline: tetap pakai daftar terakhir
+  useEffect(() => { loadPromos(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [showSplitBill, setShowSplitBill] = useState(false);
 
   const cashAmount = parseFloat(cashReceived) || 0;
@@ -55,27 +66,15 @@ export default function CartSidebar({ onEndShiftClick, onExpenseClick, onCheckou
     setCashReceived(String(roundUpToNearest(cartFinalTotal)));
   };
 
-  const applyDiscount = () => {
-    const val = parseFloat(discountInput) || 0;
-    if (discountType === 'percent') {
-      if (val > 100) return;
-      setDiscount(Math.round((val / 100) * cartTotal));
-    } else {
-      if (val > cartTotal) return;
-      setDiscount(val);
-    }
-  };
-
-  const clearDiscount = () => {
-    setDiscount(0);
-    setDiscountInput('');
+  const handlePromoChange = (e) => {
+    const id = Number(e.target.value);
+    setSelectedPromo(promos.find(p => p.id === id) || null);
   };
 
   const onCheckout = () => {
     if (paymentMethod === 'cash' && cashReceived !== '' && !isCashEnough) return;
     handleCheckout();
     setCashReceived('');
-    setDiscountInput('');
     onCheckoutSuccess?.();
   };
 
@@ -253,57 +252,32 @@ export default function CartSidebar({ onEndShiftClick, onExpenseClick, onCheckou
               </div>
             </div>
 
-            {/* Discount */}
-            <div className={`p-3.5 rounded-xl transition-all border ${discount > 0 ? 'bg-success/5 border-success/20' : 'bg-white/5 border-white/5'}`}>
-              <label className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest mb-2.5 text-text-muted">
+            {/* Promo — diskon hanya dari promo yang diatur Owner / tim Promo */}
+            <div className={`p-3.5 rounded-xl transition-all border ${discount > 0 ? 'bg-success/5 border-success/20' : promoError ? 'bg-danger/5 border-danger/20' : 'bg-white/5 border-white/5'}`}>
+              <label htmlFor="pos-promo" className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest mb-2.5 text-text-muted">
                 <Tag size={12} />
-                Diskon
+                Promo
               </label>
-              <div className="flex gap-1 mb-2 p-0.5 rounded-lg bg-surface-2">
-                {[
-                  { val: 'nominal', label: 'Rp' },
-                  { val: 'percent', label: '%' },
-                ].map(({ val, label }) => (
-                  <button
-                    key={val}
-                    className={`flex-1 py-1.5 text-[11px] font-bold rounded-md transition-colors ${discountType === val ? 'bg-white/10 text-primary' : 'bg-transparent text-text-muted'}`}
-                    onClick={() => setDiscountType(val)}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  className="flex-1 px-3 py-2 rounded-lg text-sm outline-none transition-all bg-surface-2 border border-white/10 text-text-primary focus:border-primary"
-                  placeholder={discountType === 'percent' ? '0–100' : '0'}
-                  value={discountInput}
-                  onChange={e => setDiscountInput(e.target.value)}
-                  min={0}
-                  max={discountType === 'percent' ? 100 : cartTotal}
-                />
-                <button
-                  className="px-3.5 py-2 rounded-lg text-xs font-bold transition-all hover:scale-105 active:scale-95 bg-white/10 text-text-primary border border-white/10 disabled:opacity-50"
-                  onClick={applyDiscount}
-                  disabled={
-                    (discountType === 'percent' && (parseFloat(discountInput) > 100 || parseFloat(discountInput) < 0)) ||
-                    (discountType === 'nominal' && (parseFloat(discountInput) > cartTotal || parseFloat(discountInput) < 0))
-                  }
+              {promos.length === 0 && !selectedPromo ? (
+                <div className="text-xs text-text-muted">Tidak ada promo yang berlaku saat ini.</div>
+              ) : (
+                <select
+                  id="pos-promo"
+                  className="w-full px-3 py-2 rounded-lg text-sm outline-none transition-all bg-surface-2 border border-white/10 text-text-primary focus:border-primary"
+                  value={selectedPromo ? selectedPromo.id : ''}
+                  onChange={handlePromoChange}
+                  onFocus={loadPromos}
                 >
-                  Pakai
-                </button>
-                {discount > 0 && (
-                  <button
-                    className="px-2.5 py-2 rounded-lg text-xs font-bold transition-all bg-danger/10 text-danger border border-danger/20"
-                    onClick={clearDiscount}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
+                  <option value="">Tanpa promo</option>
+                  {promos.map(p => (
+                    <option key={p.id} value={p.id}>{p.name} — {describePromo(p)}</option>
+                  ))}
+                </select>
+              )}
 
+              {selectedPromo && promoError && (
+                <div className="mt-2 text-xs font-bold text-danger">{promoError}</div>
+              )}
               {discount > 0 && (
                 <div className="mt-2 text-xs font-bold flex items-center gap-1.5 text-success">
                   <CheckCircle size={12} />
@@ -367,7 +341,7 @@ export default function CartSidebar({ onEndShiftClick, onExpenseClick, onCheckou
                 <span>{formatRupiah(cartTotal)}</span>
               </div>
               <div className="flex justify-between text-xs font-bold text-success">
-                <span>Diskon</span>
+                <span>Diskon{selectedPromo ? ` (${selectedPromo.name})` : ''}</span>
                 <span>− {formatRupiah(discount)}</span>
               </div>
             </div>

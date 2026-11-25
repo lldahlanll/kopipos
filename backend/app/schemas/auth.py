@@ -3,7 +3,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 from app.utils.sanitize import sanitize_text, sanitize_email
 
-VALID_ROLES = {"owner", "cashier", "kitchen", "supervisor"}
+VALID_ROLES = {"owner", "cashier", "kitchen", "supervisor", "promo"}
 
 
 def _validate_pin(v: Optional[str]) -> Optional[str]:
