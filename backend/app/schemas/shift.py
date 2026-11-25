@@ -19,7 +19,9 @@ class ShiftOut(BaseModel):
     started_at: datetime
     ended_at: Optional[datetime] = None
     cash_sales: float = 0.0
+    cash_refunds: float = 0.0
     total_expenses: float = 0.0
+    expected_cash: float = 0.0
     expenses: List[ExpenseOut] = []
 
     class Config:

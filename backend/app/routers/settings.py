@@ -56,9 +56,8 @@ def update_settings(data: SettingUpdate, db: Session = Depends(get_db), current_
     db.commit()
     return {"status": "success", "message": "Pengaturan berhasil disimpan"}
 
-UPLOAD_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "frontend", "public", "uploads", "settings"
-)
+from app.config import settings as _app_settings
+UPLOAD_DIR = os.path.join(_app_settings.UPLOADS_DIR, "settings")
 
 @router.post("/logo")
 def upload_store_logo(

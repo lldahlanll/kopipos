@@ -907,3 +907,91 @@ def test_supervisor_pin_is_hashed_and_validated():
         assert find_supervisor_by_pin(db, "0000") is None
     finally:
         db.close()
+
+
+def _fresh_cashier_with_shift(email, opening=100000.0):
+    from app.models import Shift
+    cashier = get_or_create_test_user(email, "cashier")
+    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': str(cashier.id), 'role': 'cashier'})}"}
+    db = SessionLocal()
+    try:
+        for s in db.query(Shift).filter(Shift.cashier_id == cashier.id, Shift.status == "open").all():
+            s.status = "closed"
+        db.commit()
+    finally:
+        db.close()
+    res = client.post("/api/shifts/start", json={"opening_balance": opening}, headers=headers)
+    assert res.status_code == 200, res.json()
+    return cashier, headers, res.json()["id"]
+
+
+def test_shift_expected_cash_counts_self_order_cash_and_cash_refunds():
+    cashier, headers, shift_id = _fresh_cashier_with_shift("test_cashier_recon@kopipos.com")
+
+    # Supervisor untuk refund
+    owner = get_or_create_test_user("test_owner_recon@kopipos.com", "owner")
+    db = SessionLocal()
+    try:
+        db.query(User).filter(User.id == owner.id).update({User.pin: hash_password("5782")})
+        db.commit()
+    finally:
+        db.close()
+
+    # 1. Order POS tunai, qty 2
+    pos = client.post("/api/orders", json={"order_type": "takeaway", "payment_method": "cash",
+                                           "items": [_first_product_item(2)]}, headers=headers)
+    assert pos.status_code == 201, pos.json()
+    pos = pos.json()
+
+    # 2. Self-order "Bayar di Kasir": wajib pilih metode; dibayar tunai
+    m_headers, _ = _member_headers()
+    so_payload = {"customer_name": "Recon", "order_type": "dine_in", "payment_method": "cashier",
+                  "items": [_first_product_item(1)]}
+    so_cash = client.post("/api/public/orders", json=so_payload, headers=m_headers).json()
+    assert client.patch(f"/api/orders/{so_cash['id']}/confirm", headers=headers).status_code == 400
+    r = client.patch(f"/api/orders/{so_cash['id']}/confirm", json={"payment_method": "cash"}, headers=headers)
+    assert r.status_code == 200, r.json()
+    assert r.json()["payment_method"] == "cash" and r.json()["status"] == "confirmed"
+
+    # 3. Self-order "Bayar di Kasir" dibayar QRIS → tidak masuk kas laci
+    so_qris = client.post("/api/public/orders", json=so_payload, headers=m_headers).json()
+    r = client.patch(f"/api/orders/{so_qris['id']}/confirm", json={"payment_method": "qris"}, headers=headers)
+    assert r.status_code == 200, r.json()
+
+    # 4. Refund tunai 1 dari 2 item order POS → partially_refunded, uang keluar laci
+    item_id = pos["items"][0]["id"]
+    ref = client.post(f"/api/orders/{pos['id']}/refund", json={
+        "supervisor_pin": "5782", "reason_code": "salah_pesan", "refund_method": "cash",
+        "items": [{"order_item_id": item_id, "quantity": 1}],
+    }, headers=headers)
+    assert ref.status_code == 200, ref.json()
+    assert ref.json()["status"] == "partially_refunded"
+    refund_amount = ref.json()["refunds"][0]["amount"]
+
+    # 5. Pengeluaran
+    assert client.post(f"/api/shifts/{shift_id}/expenses", json={"amount": 5000, "description": "Es batu"},
+                       headers=headers).status_code == 200
+
+    expected = 100000.0 + pos["total"] + so_cash["total"] - refund_amount - 5000.0
+    active = client.get("/api/shifts/active", headers=headers).json()
+    assert active["cash_sales"] == pos["total"] + so_cash["total"]
+    assert active["cash_refunds"] == refund_amount
+    assert abs(active["expected_cash"] - expected) < 0.01
+
+    end = client.post(f"/api/shifts/{shift_id}/end", json={"closing_actual": expected}, headers=headers).json()
+    assert abs(end["closing_expected"] - expected) < 0.01
+
+
+def test_unpaid_qris_self_order_cannot_be_confirmed_by_cashier():
+    from unittest.mock import patch
+    _, headers, _ = _fresh_cashier_with_shift("test_cashier_qris_guard@kopipos.com")
+    m_headers, _ = _member_headers()
+    with patch("app.services.MidtransService.create_transaction",
+               return_value={"token": "tok", "redirect_url": "https://example.com/pay"}):
+        order = client.post("/api/public/orders", json={
+            "customer_name": "QRIS", "order_type": "takeaway", "payment_method": "qris",
+            "items": [_first_product_item(1)],
+        }, headers=m_headers).json()
+    r = client.patch(f"/api/orders/{order['id']}/confirm", headers=headers)
+    assert r.status_code == 400
+    assert "QRIS belum dibayar" in r.json()["detail"]

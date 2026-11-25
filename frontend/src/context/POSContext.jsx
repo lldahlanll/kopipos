@@ -496,9 +496,14 @@ export function POSProvider({ children }) {
     return () => clearInterval(interval);
   }, [isBrowserOnline]);
 
-  const confirmOrder = async (id) => {
+  // paymentMethod: metode bayar sebenarnya untuk order "Bayar di Kasir"
+  // (cash/qris/transfer) — menentukan masuk-tidaknya ke hitungan kas laci.
+  const confirmOrder = async (id, paymentMethod) => {
     try {
-      const res = await client.patch(`/orders/${id}/confirm`);
+      const res = await client.patch(
+        `/orders/${id}/confirm`,
+        paymentMethod ? { payment_method: paymentMethod } : undefined
+      );
       toast.success('Order berhasil dikonfirmasi');
       fetchIncomingOrders();
       // Munculkan modal sukses agar kasir bisa mencetak struk fisik

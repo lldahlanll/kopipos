@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models import Order, OrderItem, Product, Modifier, User, Shift, OrderAuditLog, OrderRefund, OrderRefundItem, IdempotencyKey
-from app.schemas.order import OrderCreate, OrderResponse, OrderListResponse, OrderVoidRequest, OrderRefundRequest, BulkReviewRequest
+from app.schemas.order import OrderCreate, OrderResponse, OrderListResponse, OrderVoidRequest, OrderRefundRequest, BulkReviewRequest, OrderConfirm
 from app.utils.auth import get_current_user, require_pos_access, require_owner, find_supervisor_by_pin
 from app.limiter import limiter
 from app.services import OrderService
@@ -185,8 +185,11 @@ def get_order(id: int, db: Session = Depends(get_db), current_user: User = Depen
     if not order: raise HTTPException(status_code=404, detail="Order tidak ditemukan")
     return order
 
+TENDER_METHODS = ("cash", "qris", "transfer")
+
+
 @router.patch("/{id}/confirm", response_model=OrderResponse)
-def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+def confirm_order(id: int, payload: Optional[OrderConfirm] = None, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     """Konfirmasi order oleh kasir.
 
     Mendukung dua skenario:
@@ -221,6 +224,19 @@ def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = D
         and order.cashier_id is None
     )
 
+    # QRIS yang belum dibayar hanya boleh dikonfirmasi oleh callback Midtrans.
+    if order.status == "pending" and order.payment_method == "qris":
+        raise HTTPException(status_code=400, detail="Order QRIS belum dibayar — tunggu konfirmasi pembayaran dari Midtrans")
+
+    # "Bayar di Kasir": kasir wajib mencatat metode bayar sebenarnya, karena
+    # hanya pembayaran tunai yang masuk hitungan kas laci saat tutup shift.
+    tender = payload.payment_method if payload else None
+    if order.payment_method == "cashier":
+        if tender not in TENDER_METHODS:
+            raise HTTPException(status_code=400, detail="Pilih metode pembayaran pelanggan: cash, qris, atau transfer")
+    elif tender is not None:
+        raise HTTPException(status_code=400, detail="Metode pembayaran order ini sudah ditentukan saat checkout")
+
     active_shift = db.query(Shift).filter(Shift.cashier_id == current_user.id, Shift.status == "open").first()
 
     if not is_qris_already_paid and not active_shift:
@@ -234,6 +250,9 @@ def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = D
         if order.member_id and order.points_earned > 0:
             if order.member:
                 order.member.points += order.points_earned
+
+    if order.payment_method == "cashier":
+        order.payment_method = tender
 
     # Assign kasir untuk pencatatan (berlaku untuk pending dan QRIS confirmed)
     order.cashier_id = current_user.id

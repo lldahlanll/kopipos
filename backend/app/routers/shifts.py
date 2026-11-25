@@ -1,7 +1,7 @@
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
 from sqlalchemy.orm import Session
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from app import models
 from app.database import get_db
 from app.utils.auth import get_current_user, require_owner, require_pos_access
@@ -37,7 +37,7 @@ def start_shift(request: Request, shift: ShiftCreate, db: Session = Depends(get_
         cashier_id=current_user.id,
         opening_balance=shift.opening_balance,
         status="open",
-        started_at=datetime.now()
+        started_at=datetime.now(timezone.utc)
     )
     db.add(new_shift)
     db.commit()
@@ -68,21 +68,12 @@ def end_shift(shift_id: int, shift_close: ShiftClose, db: Session = Depends(get_
     if shift.status == "closed":
         raise HTTPException(status_code=400, detail="Shift is already closed")
     
-    # Calculate expected closing balance from cash orders during this shift
-    cash_orders_total = db.query(func.sum(models.Order.total)).filter(
-        models.Order.shift_id == shift.id,
-        models.Order.payment_method == "cash",
-        models.Order.status == "paid"
-    ).scalar() or 0.0
-
-    expenses_total = db.query(func.sum(models.ShiftExpense.amount)).filter(
-        models.ShiftExpense.shift_id == shift.id
-    ).scalar() or 0.0
-
-    shift.closing_expected = shift.opening_balance + cash_orders_total - expenses_total
+    # Tutup dulu (ended_at) agar refund setelah ini tidak ikut dihitung,
+    # lalu simpan ekspektasi kas dari perhitungan yang sama dengan layar POS.
+    shift.ended_at = datetime.now(timezone.utc)
+    shift.closing_expected = shift.expected_cash
     shift.closing_actual = shift_close.closing_actual
     shift.status = "closed"
-    shift.ended_at = datetime.now()
     
     db.commit()
     db.refresh(shift)

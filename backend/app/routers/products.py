@@ -102,9 +102,8 @@ def delete_product(id: int, db: Session = Depends(get_db), current_user: User = 
     return {"message": "Produk dihapus permanen"}
 
 # Upload image dir
-UPLOAD_DIR = os.path.join(
-    os.path.dirname(__file__), "..", "..", "..", "frontend", "public", "uploads", "products"
-)
+from app.config import settings as _app_settings
+UPLOAD_DIR = os.path.join(_app_settings.UPLOADS_DIR, "products")
 
 @router.post("/{id}/image")
 def upload_product_image(

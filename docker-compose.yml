@@ -25,6 +25,11 @@ services:
       # Dirakit dari variabel POSTGRES_* di .env → password cukup ditulis sekali.
       # (Nilai ini mengalahkan DATABASE_URL jika ada di .env.)
       DATABASE_URL: postgresql://${POSTGRES_USER:-kopipos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD belum diisi di .env}@db:5432/${POSTGRES_DB:-kopipos}
+      # Gambar produk & logo disimpan di volume, bukan di dalam container,
+      # supaya tidak hilang saat rebuild / recreate.
+      UPLOADS_DIR: /data/uploads
+    volumes:
+      - kopipos_uploads:/data/uploads
     # Port 8000 sengaja TIDAK dibuka ke host — hanya diakses lewat
     # reverse proxy nginx di container frontend (/api, /uploads).
     expose:
@@ -49,6 +54,7 @@ services:
 
 volumes:
   kopipos_postgres_data:
+  kopipos_uploads:
 
 networks:
   kopipos_internal:

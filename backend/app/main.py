@@ -167,9 +167,8 @@ def health():
     return {"status": "ok", "app": "KopiPOS"}
 
 # Serve uploaded product images
-uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "..", "frontend", "public", "uploads")
-if not os.path.isdir(uploads_dir):
-    os.makedirs(uploads_dir, exist_ok=True)
+uploads_dir = _settings.UPLOADS_DIR
+os.makedirs(uploads_dir, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 # Serve React Frontend Build

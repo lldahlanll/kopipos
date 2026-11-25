@@ -5,6 +5,9 @@ from typing import Optional
 from pydantic_settings import BaseSettings
 
 env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
+_default_uploads_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "frontend", "public", "uploads"
+)
 default_db = "sqlite:///" + os.path.join(os.path.dirname(os.path.dirname(__file__)), "kopipos.db")
 
 # File untuk menyimpan SECRET_KEY yang di-auto-generate (mode production)
@@ -33,6 +36,10 @@ class Settings(BaseSettings):
     # Zona waktu toko. Dipakai untuk "hari ini" (nomor order, laporan, shift)
     # dan zona waktu session PostgreSQL.
     APP_TIMEZONE: str = "Asia/Jakarta"
+
+    # Folder file upload (gambar produk, logo). Di Docker diisi lewat env dan
+    # dipasang ke volume agar file tidak hilang saat container dibuat ulang.
+    UPLOADS_DIR: str = _default_uploads_dir
 
     # Midtrans Integration
     MIDTRANS_SERVER_KEY: Optional[str] = None

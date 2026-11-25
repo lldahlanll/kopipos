@@ -145,13 +145,42 @@ class Shift(Base):
     orders = relationship("Order", back_populates="shift")
     expenses = relationship("ShiftExpense", back_populates="shift", cascade="all, delete-orphan")
 
+    # Status order yang uangnya sudah diterima kasir. Refund dikurangi terpisah
+    # lewat cash_refunds (uang keluar dari laci saat refund dilakukan).
+    CASH_COLLECTED_STATUSES = ("confirmed", "preparing", "ready", "paid", "partially_refunded", "refunded")
+
     @property
     def cash_sales(self) -> float:
-        return sum(o.total for o in self.orders if o.payment_method == "cash" and o.status == "paid")
+        """Total order tunai yang dibayar selama shift ini (sebelum refund)."""
+        return sum(
+            o.total for o in self.orders
+            if o.payment_method == "cash" and o.status in self.CASH_COLLECTED_STATUSES
+        )
+
+    @property
+    def cash_refunds(self) -> float:
+        """Refund tunai yang dikeluarkan kasir shift ini selama shift berjalan."""
+        from sqlalchemy.orm import object_session
+        session = object_session(self)
+        if session is None or self.started_at is None:
+            return 0.0
+        q = session.query(func.coalesce(func.sum(OrderRefund.amount), 0.0)).filter(
+            OrderRefund.refund_method == "cash",
+            OrderRefund.cashier_id == self.cashier_id,
+            OrderRefund.created_at >= self.started_at,
+        )
+        if self.ended_at is not None:
+            q = q.filter(OrderRefund.created_at <= self.ended_at)
+        return float(q.scalar() or 0.0)
 
     @property
     def total_expenses(self) -> float:
         return sum(e.amount for e in self.expenses)
+
+    @property
+    def expected_cash(self) -> float:
+        """Uang yang seharusnya ada di laci: modal + penjualan tunai − refund tunai − pengeluaran."""
+        return self.opening_balance + self.cash_sales - self.cash_refunds - self.total_expenses
 
 class ShiftExpense(Base):
     __tablename__ = "shift_expenses"
