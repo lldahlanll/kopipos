@@ -1,6 +1,10 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000/api';
+// Gunakan path relatif (/api) agar Vite proxy aktif saat dev lokal.
+// Di produksi (build), gunakan URL absolut dari env.
+const API_BASE = import.meta.env.PROD
+  ? (import.meta.env.VITE_API_BASE || '/api')
+  : '/api';
 
 const client = axios.create({
   baseURL: API_BASE,

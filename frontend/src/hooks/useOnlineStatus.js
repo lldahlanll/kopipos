@@ -7,7 +7,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 const API_URL = import.meta.env.VITE_API_URL || '';
-const HEALTH_URL = API_URL ? `${API_URL}/api/health` : '/api/health';
+// Saat dev lokal, gunakan path relatif (/api/health) agar Vite proxy aktif.
+// Saat production build, gunakan URL absolut dari env.
+const HEALTH_URL = (!import.meta.env.PROD && !API_URL)
+  ? '/api/health'
+  : API_URL
+    ? `${API_URL}/api/health`
+    : '/api/health';
 const PING_INTERVAL_MS = 15_000; // ping setiap 15 detik
 const PING_TIMEOUT_MS = 5_000;  // timeout 5 detik
 

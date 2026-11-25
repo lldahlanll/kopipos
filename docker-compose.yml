@@ -3,12 +3,12 @@ services:
     image: postgres:16
     container_name: kopipos_db
     restart: always
+    # Semua nilai diambil dari file .env di root (tidak di-commit ke git)
     environment:
-      POSTGRES_DB: kopipos
-      POSTGRES_USER: kopipos
-      POSTGRES_PASSWORD: k0p!p0s.Eph!nu.my.!d
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-kopipos}
+      POSTGRES_USER: ${POSTGRES_USER:-kopipos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD belum diisi di .env}
+    # Port 5432 sengaja TIDAK dibuka ke host — backend akses via jaringan internal.
     volumes:
       - kopipos_postgres_data:/var/lib/postgresql/data
     networks:
@@ -21,20 +21,22 @@ services:
     restart: always
     env_file:
       - .env
-    ports:
-      - "8000:8000"
+    environment:
+      # Dirakit dari variabel POSTGRES_* di .env → password cukup ditulis sekali.
+      # (Nilai ini mengalahkan DATABASE_URL jika ada di .env.)
+      DATABASE_URL: postgresql://${POSTGRES_USER:-kopipos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD belum diisi di .env}@db:5432/${POSTGRES_DB:-kopipos}
+    # Port 8000 sengaja TIDAK dibuka ke host — hanya diakses lewat
+    # reverse proxy nginx di container frontend (/api, /uploads).
+    expose:
+      - "8000"
     depends_on:
       - db
     networks:
       - kopipos_internal
-      - shared_network
 
   frontend:
     build:
       context: ./frontend
-      args:
-        VITE_API_URL: https://kopipos-api.ephinu.my.id 
-        VITE_API_BASE: https://kopipos-api.ephinu.my.id/api
     container_name: kopipos_frontend
     restart: always
     expose:
@@ -42,7 +44,8 @@ services:
     depends_on:
       - backend
     networks:
-      - shared_network
+      - kopipos_internal   # untuk proxy ke backend
+      - shared_network     # untuk Nginx Proxy Manager
 
 volumes:
   kopipos_postgres_data:

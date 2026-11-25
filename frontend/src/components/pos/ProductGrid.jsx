@@ -4,7 +4,8 @@ import { usePOS } from '../../context/POSContext';
 import { formatRupiah } from '../../utils/format';
 import { useNavigate } from 'react-router-dom';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Kosong = path relatif (/uploads/...) → diproxy oleh Vite (dev) / nginx (prod).
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 function ProductImage({ src, name }) {
   const [error, setError] = useState(false);

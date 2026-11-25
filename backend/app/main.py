@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from app.limiter import limiter
 import app.models  # noqa
 import os
+from app.config import settings as _settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -37,11 +38,11 @@ async def lifespan(app: FastAPI):
         try:
             conn.execute(text("""
                 CREATE TABLE IF NOT EXISTS idempotency_keys (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     key VARCHAR(100) UNIQUE NOT NULL,
                     actor_id VARCHAR(50) NOT NULL,
                     order_id INTEGER REFERENCES orders(id) ON DELETE SET NULL,
-                    created_at DATETIME DEFAULT (datetime('now'))
+                    created_at TIMESTAMP DEFAULT NOW()
                 )
             """))
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_idempotency_keys_key ON idempotency_keys (key)"))
@@ -56,23 +57,50 @@ async def lifespan(app: FastAPI):
     env_label = "🟢 PRODUCTION" if settings.APP_ENV == "production" else "🟡 DEVELOPMENT"
     print(f"\n{'='*55}")
     print(f"  KopiPOS v1.0  |  Mode: {env_label}")
-    print(f"  DB  : {settings.DATABASE_URL[:40]}...")
+    import re as _re
+    _safe_db = _re.sub(r"://([^:/@]+):[^@]*@", r"://\1:****@", settings.DATABASE_URL)
+    print(f"  DB  : {_safe_db}")
+    print(f"  URL : {settings.APP_URL or 'http://localhost:8000 (default)'}")
     print(f"  Key : {'[dari .env]' if settings.SECRET_KEY else '[auto-generated / default]'}")
     print(f"{'='*55}\n")
     yield
+
 
 app = FastAPI(title="KopiPOS API", version="1.0.0", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-origins = [
+# ── CORS Origins ──────────────────────────────────────────────────────────────
+# Selalu izinkan localhost untuk development.
+# Jika APP_URL diisi di .env, domain tersebut otomatis ditambahkan ke daftar.
+# Dengan begini, migrasi lokal ↔ server cukup dengan mengubah APP_URL di .env.
+_localhost_origins = [
     "http://localhost:5173",
     "http://localhost:8000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:8000",
-    "http://kopipos.ephinu.my.id",
-    "https://kopipos.ephinu.my.id",
 ]
+
+# Tambahkan domain dari APP_URL secara dinamis (http & https)
+_app_url_origins = []
+if _settings.APP_URL:
+    base = _settings.APP_URL.rstrip("/")
+    # Pastikan kedua scheme dicakup
+    if base.startswith("https://"):
+        _app_url_origins = [base, base.replace("https://", "http://")]
+    elif base.startswith("http://"):
+        _app_url_origins = [base, base.replace("http://", "https://")]
+    else:
+        _app_url_origins = [f"http://{base}", f"https://{base}"]
+
+# Midtrans Snap popup perlu bisa kirim request ke API kita
+_midtrans_origins = [
+    "https://app.sandbox.midtrans.com",
+    "https://app.midtrans.com",
+]
+
+origins = list(dict.fromkeys(_localhost_origins + _app_url_origins + _midtrans_origins))
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -80,7 +108,9 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
+
 
 app.include_router(auth.router)
 app.include_router(categories.router)

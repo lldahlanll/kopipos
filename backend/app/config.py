@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 480
     SHOP_NAME: str = "KopiPOS Coffee Shop"
     
+    # URL Publik Aplikasi (digunakan untuk CORS dan konfigurasi lain yang butuh domain)
+    # Lokal : http://localhost:8000
+    # Server: https://kopipos.ephinu.my.id
+    APP_URL: Optional[str] = None
+
     # Midtrans Integration
     MIDTRANS_SERVER_KEY: Optional[str] = None
     MIDTRANS_CLIENT_KEY: Optional[str] = None

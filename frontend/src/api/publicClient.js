@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://api.kopipos.ephinu.my.id/api';
+// VITE_API_BASE dibaca dari frontend/.env (production) atau frontend/.env.local (lokal).
+// Jika tidak diset, fallback ke '/api' yang bekerja via proxy Vite (dev) atau Nginx (prod).
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 const publicClient = axios.create({
   baseURL: API_BASE,
