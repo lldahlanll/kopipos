@@ -401,7 +401,7 @@ def test_midtrans_self_order_checkout_and_callback():
     assert res_status.json()["status"] == "confirmed"
 
 
-def test_self_order_dine_in_payment_restrictions():
+def test_self_order_dine_in_payment_allowed():
     # 1. Register member & get headers
     import uuid
     random_phone = f"0812345{uuid.uuid4().hex[:5]}"
@@ -416,6 +416,8 @@ def test_self_order_dine_in_payment_restrictions():
         "phone": random_phone,
         "pin": "123456"
     })
+    if res_reg.status_code != 201:
+        raise Exception(f"Reg failed: {res_reg.status_code}, {res_reg.json()}")
     token = res_reg.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
@@ -423,8 +425,11 @@ def test_self_order_dine_in_payment_restrictions():
     p = res_menu.json()["products"][0]
     variant_id = p["variants"][0]["id"] if p.get("variants") else None
     
+    sugar_group = next((g for g in p.get("modifier_groups", []) if "sugar" in g["name"].lower()), None)
+    modifier_ids = [sugar_group["modifiers"][0]["id"]] if sugar_group else []
+    
     # 2. Try to checkout with dine_in & cashier payment method
-    payload_invalid = {
+    payload_valid = {
         "customer_name": "Restriction Customer",
         "order_type": "dine_in",
         "payment_method": "cashier",
@@ -432,14 +437,15 @@ def test_self_order_dine_in_payment_restrictions():
             {
                 "product_id": p["id"],
                 "quantity": 1,
-                "variant_id": variant_id
+                "variant_id": variant_id,
+                "modifier_ids": modifier_ids
             }
         ]
     }
     
-    res = client.post("/api/public/orders", json=payload_invalid, headers=headers)
-    assert res.status_code == 400
-    assert "tidak diperbolehkan untuk Dine In" in res.json()["detail"]
+    res = client.post("/api/public/orders", json=payload_valid, headers=headers)
+    assert res.status_code == 201
+    assert res.json()["status"] == "pending"
 
 
 def test_cashier_self_order_integration():

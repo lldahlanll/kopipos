@@ -129,12 +129,33 @@ def get_active_orders(db: Session = Depends(get_db), current_user: User = Depend
 
 @router.get("/incoming/pending", response_model=List[OrderListResponse])
 def get_incoming_orders(db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
-    """Ambil order self-order yang belum dikonfirmasi kasir."""
+    """Ambil order self-order yang belum dikonfirmasi kasir.
+
+    Mencakup dua kategori:
+    1. Order self-order dengan status 'pending' (semua metode pembayaran) yang masih
+       menunggu konfirmasi atau pembayaran kasir.
+    2. Order QRIS yang sudah dibayar via Midtrans (status=confirmed) tetapi
+       belum diakui kasir (cashier_id IS NULL), sehingga kasir tetap mendapat
+       notifikasi meski pembayaran sudah otomatis dikonfirmasi oleh callback.
+    """
+    from sqlalchemy import or_, and_
+
     return db.query(Order).filter(
-        Order.status == "pending",
         Order.source == "self_order",
-        Order.payment_method == "cashier"
+        or_(
+            # Kelompok 1: Semua order self-order yang masih pending
+            # (cashier, transfer, cash, maupun qris yang belum dibayar)
+            Order.status == "pending",
+            # Kelompok 2: QRIS sudah dibayar (confirmed oleh callback Midtrans)
+            # tapi kasir belum meng-acknowledge (cashier_id masih NULL)
+            and_(
+                Order.status == "confirmed",
+                Order.payment_method == "qris",
+                Order.cashier_id == None  # noqa: E711
+            )
+        )
     ).order_by(Order.created_at.asc()).all()
+
 
 @router.post("/bulk-review")
 def bulk_review(payload: BulkReviewRequest, db: Session = Depends(get_db), current_user: User = Depends(require_owner)):
@@ -166,24 +187,60 @@ def get_order(id: int, db: Session = Depends(get_db), current_user: User = Depen
 
 @router.patch("/{id}/confirm", response_model=OrderResponse)
 def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+    """Konfirmasi order oleh kasir.
+
+    Mendukung dua skenario:
+    - Order pending (cashier/transfer): ubah status → confirmed, tambah poin, assign kasir & shift.
+      Wajib punya shift aktif.
+    - Order QRIS confirmed tanpa kasir: hanya assign kasir (poin sudah ditambahkan oleh
+      Midtrans callback). Shift aktif bersifat opsional — jika tidak ada, shift_id dibiarkan NULL
+      agar order tetap bisa di-acknowledge oleh kasir yang belum buka shift.
+    """
+    from sqlalchemy import or_, and_
+
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.member)
-    ).filter(Order.id == id, Order.status == "pending").first()
+    ).filter(
+        Order.id == id,
+        or_(
+            Order.status == "pending",
+            and_(
+                Order.status == "confirmed",
+                Order.payment_method == "qris",
+                Order.cashier_id == None  # noqa: E711  — QRIS acknowledged by kasir
+            )
+        )
+    ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan atau sudah diproses")
-    
+
+    is_qris_already_paid = (
+        order.status == "confirmed"
+        and order.payment_method == "qris"
+        and order.cashier_id is None
+    )
+
     active_shift = db.query(Shift).filter(Shift.cashier_id == current_user.id, Shift.status == "open").first()
-    if not active_shift:
+
+    if not is_qris_already_paid and not active_shift:
+        # Order pending biasa (cashier/transfer) wajib ada shift aktif
         raise HTTPException(status_code=400, detail="Shift belum dibuka (No active shift)")
 
-    order.status = "confirmed"
-    # Add earned points to member
-    if order.member_id and order.points_earned > 0:
-        if order.member:
-            order.member.points += order.points_earned
+    if order.status == "pending":
+        order.status = "confirmed"
+        # Tambah poin yang didapat (hanya untuk order yang sebelumnya pending,
+        # bukan QRIS confirmed — poin QRIS sudah ditambahkan via Midtrans callback)
+        if order.member_id and order.points_earned > 0:
+            if order.member:
+                order.member.points += order.points_earned
+
+    # Assign kasir untuk pencatatan (berlaku untuk pending dan QRIS confirmed)
     order.cashier_id = current_user.id
-    order.shift_id = active_shift.id
+    # Assign shift jika ada (QRIS acknowledge boleh tanpa shift)
+    if active_shift:
+        order.shift_id = active_shift.id
+
     db.commit()
     db.refresh(order)
     return order

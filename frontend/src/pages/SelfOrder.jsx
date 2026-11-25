@@ -579,7 +579,7 @@ export default function SelfOrder() {
                     let statusColor = 'bg-yellow-500/12 text-yellow-500 border-yellow-500/20';
                     switch (order.status) {
                       case 'pending':
-                        statusLabel = 'Menunggu Konfirmasi';
+                        statusLabel = order.payment_method === 'qris' ? 'Menunggu Pembayaran' : 'Menunggu Konfirmasi';
                         statusColor = 'bg-yellow-500/12 text-yellow-500 border-yellow-500/20';
                         break;
                       case 'confirmed':

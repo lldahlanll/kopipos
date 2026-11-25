@@ -191,8 +191,6 @@ def create_self_order(
         raise HTTPException(status_code=400, detail="Order harus memiliki minimal 1 item")
     if data.order_type not in ("dine_in", "takeaway"):
         raise HTTPException(status_code=400, detail="Order type invalid")
-    if data.order_type == "dine_in" and data.payment_method == "cashier":
-        raise HTTPException(status_code=400, detail="Metode pembayaran Bayar di Kasir tidak diperbolehkan untuk Dine In")
 
     # ── Idempotency Check: cegah double order saat jaringan lemah ──
     idempotency_key = request.headers.get("X-Idempotency-Key")
@@ -381,7 +379,10 @@ def get_self_order_status(id: int, db: Session = Depends(get_db)):
 @router.get("/orders", response_model=List[OrderStatusResponse])
 def get_member_orders(db: Session = Depends(get_db), current_member: Member = Depends(get_current_member)):
     # Hanya tampilkan pesanan hari ini agar tidak menumpuk
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # Menggunakan zona waktu Jakarta (UTC+7) agar konsisten dengan hari lokal
+    from datetime import timezone, timedelta
+    tz_jakarta = timezone(timedelta(hours=7))
+    today_start = datetime.now(tz_jakarta).replace(hour=0, minute=0, second=0, microsecond=0)
     return db.query(Order).filter(
         Order.member_id == current_member.id,
         Order.created_at >= today_start

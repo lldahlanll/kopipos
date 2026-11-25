@@ -427,28 +427,74 @@ export function POSProvider({ children }) {
   // Self Order
   const [incomingOrders, setIncomingOrders] = useState([]);
 
+  const playNotificationSound = () => {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+      
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(587.33, audioCtx.currentTime); // D5
+      gainNode.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      
+      oscillator.start();
+      
+      setTimeout(() => {
+        oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); // A5
+      }, 150);
+      
+      oscillator.stop(audioCtx.currentTime + 0.3);
+    } catch (e) {
+      console.error('Gagal memutar audio alert:', e);
+    }
+  };
+
   const fetchIncomingOrders = async () => {
     try {
-      if (window.location.port === '5174') {
-        setIncomingOrders([]);
-        return;
-      }
       const res = await client.get('/orders/incoming/pending');
-      setIncomingOrders(res.data);
+      setIncomingOrders(prev => {
+        if (res.data.length > prev.length) {
+          playNotificationSound();
+        }
+        return res.data;
+      });
     } catch (err) {
       console.error('Failed to fetch incoming orders', err);
     }
   };
 
+  // Track incoming orders in a ref so the polling interval always sees the latest value
+  const incomingOrdersRef = useRef(incomingOrders);
   useEffect(() => {
-    if (activeShift && isOnline) {
-      fetchIncomingOrders();
-      const interval = setInterval(() => {
-        if (!document.hidden) fetchIncomingOrders();
-      }, 10000); // Polling setiap 10 detik jika aktif
-      return () => clearInterval(interval);
-    }
-  }, [activeShift, isOnline]);
+    incomingOrdersRef.current = incomingOrders;
+  }, [incomingOrders]);
+
+  useEffect(() => {
+    // Polling notif self-order tidak perlu tunggu shift dibuka.
+    // Kasir harus bisa lihat pesanan masuk kapanpun browser terhubung.
+    if (!isBrowserOnline) return;
+    fetchIncomingOrders();
+
+    const tick = () => {
+      // Jika ada order QRIS pending (menunggu konfirmasi Midtrans),
+      // polling tetap berjalan meskipun tab tidak aktif (document.hidden),
+      // karena status bisa berubah kapan saja setelah callback Midtrans diterima.
+      const hasQrisPending = incomingOrdersRef.current.some(
+        o => o.payment_method === 'qris' && o.status === 'pending'
+      );
+      if (!document.hidden || hasQrisPending) {
+        fetchIncomingOrders();
+      }
+    };
+
+    // Gunakan interval 2 detik agar perubahan status QRIS (pending→confirmed)
+    // cepat terdeteksi setelah Midtrans callback tiba.
+    const interval = setInterval(tick, 2000);
+    return () => clearInterval(interval);
+  }, [isBrowserOnline]);
 
   const confirmOrder = async (id) => {
     try {

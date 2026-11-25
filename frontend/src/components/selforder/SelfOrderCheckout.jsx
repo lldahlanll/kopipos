@@ -137,10 +137,7 @@ export default function SelfOrderCheckout({ cart, onBack, onSubmit, loading, tab
               { id: 'cashier', name: 'Bayar di Kasir', desc: 'Pesan sekarang, bayar cash/kartu di kasir' },
               { id: 'qris', name: 'QRIS', desc: 'Scan barcode (konfirmasi kasir manual)' },
               { id: 'transfer', name: 'Transfer Bank', desc: 'Transfer manual ke rekening toko' }
-            ].filter(method => {
-              if (orderType === 'dine_in' && method.id === 'cashier') return false;
-              return true;
-            }).map(method => {
+            ].map(method => {
               const isSelected = paymentMethod === method.id;
               return (
                 <label 
