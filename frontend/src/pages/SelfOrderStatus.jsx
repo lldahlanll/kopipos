@@ -29,8 +29,15 @@ export default function SelfOrderStatus() {
         const res = await getOrderStatus(id);
         setOrder(res.data);
       } catch (err) {
-        if (err.response?.status === 404) {
+        const status = err.response?.status;
+        if (status === 404) {
           toast.error("Pesanan tidak ditemukan");
+          navigate('/order');
+        } else if (status === 401) {
+          // Status pesanan hanya bisa dilihat pemiliknya; sesi member habis / belum login
+          localStorage.removeItem('member_token');
+          localStorage.removeItem('member_profile');
+          toast.error("Sesi Anda berakhir. Silakan masuk lagi untuk melihat pesanan.", { id: 'member-session' });
           navigate('/order');
         }
       } finally {

@@ -370,8 +370,15 @@ def create_self_order(
     return order
 
 @router.get("/orders/{id}/status", response_model=OrderStatusResponse)
-def get_self_order_status(id: int, db: Session = Depends(get_db)):
-    order = db.query(Order).filter(Order.id == id, Order.source == "self_order").first()
+def get_self_order_status(id: int, db: Session = Depends(get_db), current_member: Member = Depends(get_current_member)):
+    # Hanya pemilik pesanan yang boleh melihat statusnya (berisi nama, total,
+    # dan link pembayaran). Pesanan member lain dijawab 404 — sama dengan id
+    # yang tidak ada — agar id yang berurutan tidak bisa ditebak satu per satu.
+    order = db.query(Order).filter(
+        Order.id == id,
+        Order.source == "self_order",
+        Order.member_id == current_member.id,
+    ).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
     return order

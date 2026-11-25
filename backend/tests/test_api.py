@@ -1081,3 +1081,21 @@ def test_pos_order_discount_only_via_running_promo():
     # Promo yang sudah dipakai tidak bisa dihapus
     assert client.delete(f"/api/promos/{p['id']}", headers=owner).status_code == 400
     assert client.delete(f"/api/promos/{big['id']}", headers=owner).status_code == 200
+
+
+def test_order_status_only_visible_to_its_member():
+    owner_headers, _ = _member_headers()
+    other_headers, _ = _member_headers()
+    order = client.post("/api/public/orders", json={
+        "customer_name": "Privasi", "order_type": "takeaway", "payment_method": "cashier",
+        "items": [_first_product_item(1)],
+    }, headers=owner_headers).json()
+
+    url = f"/api/public/orders/{order['id']}/status"
+    assert client.get(url).status_code == 401                        # tanpa login
+    assert client.get(url, headers=other_headers).status_code == 404  # member lain
+    mine = client.get(url, headers=owner_headers)
+    assert mine.status_code == 200 and mine.json()["id"] == order["id"]
+    # Token staf juga tidak bisa dipakai untuk endpoint member
+    staff = _headers_for("test_cashier_status@kopipos.com", "cashier")
+    assert client.get(url, headers=staff).status_code == 401
