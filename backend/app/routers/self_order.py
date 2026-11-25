@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import time
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
@@ -196,7 +196,7 @@ def create_self_order(
     idempotency_key = request.headers.get("X-Idempotency-Key")
     actor_id = f"member_{current_member.id}"
     if idempotency_key:
-        cutoff = datetime.utcnow() - timedelta(minutes=5)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
         existing = (
             db.query(IdempotencyKey)
             .filter(

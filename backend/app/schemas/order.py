@@ -1,11 +1,12 @@
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional, List
 from datetime import datetime
 from app.utils.sanitize import sanitize_text
 
 class OrderItemCreate(BaseModel):
     product_id: int
-    quantity: int
+    # Wajib positif: qty negatif bisa dipakai untuk memotong total order.
+    quantity: int = Field(..., gt=0, le=999)
     variant_id: Optional[int] = None
     modifier_ids: Optional[List[int]] = None
 

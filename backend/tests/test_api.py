@@ -532,8 +532,8 @@ def test_cashier_self_order_integration():
     
     # Cashier pending order should be in the list
     assert cashier_order["id"] in incoming_ids
-    # QRIS pending order should NOT be in the list (since payment is not completed yet)
-    assert qris_order["id"] not in incoming_ids
+    # QRIS pending order juga tampil (kasir diberi tahu ada pesanan menunggu pembayaran)
+    assert qris_order["id"] in incoming_ids
 
     # 5. Simulate Midtrans success callback to confirm QRIS order
     from app.config import settings
@@ -681,7 +681,7 @@ def test_member_points_lifecycle():
     db = SessionLocal()
     try:
         db_owner = db.query(User).filter(User.id == owner_user.id).first()
-        db_owner.pin = "123456"
+        db_owner.pin = hash_password("123456")  # PIN disimpan sebagai hash
         db.commit()
     finally:
         db.close()
@@ -788,3 +788,122 @@ def test_member_points_lifecycle():
 
 
 
+
+
+# ── Regression tests: temuan audit keamanan ─────────────────────────────────
+
+def _member_headers():
+    import uuid
+    from app.limiter import limiter
+    limiter.reset()  # register member dibatasi 5/menit per IP
+    res = client.post("/api/member/register", json={
+        "name": "Audit Member",
+        "phone": f"0813{uuid.uuid4().int % 10**8:08d}",
+        "pin": "246810",
+    })
+    assert res.status_code == 201, res.json()
+    return {"Authorization": f"Bearer {res.json()['access_token']}"}, res.json()["member"]
+
+
+def _first_product_item(qty):
+    p = client.get("/api/public/menu").json()["products"][0]
+    item = {"product_id": p["id"], "quantity": qty}
+    # Penuhi grup modifier wajib agar validasi lolos
+    mods = []
+    for g in p.get("modifier_groups", []):
+        if g["required"] and g["modifiers"]:
+            need = 1 if g["selection_type"] == "radio" else max(g["min_select"], 1)
+            mods += [m["id"] for m in g["modifiers"][:need]]
+    item["modifier_ids"] = mods
+    return item
+
+
+def test_member_token_rejected_on_staff_endpoints():
+    owner = get_or_create_test_user("test_owner_audit@kopipos.com", "owner")
+    # Token member yang id-nya kebetulan sama dengan id owner
+    forged = create_access_token(data={"sub": str(owner.id), "role": "member"})
+    headers = {"Authorization": f"Bearer {forged}"}
+    assert client.get("/api/auth/me", headers=headers).status_code == 401
+    assert client.get("/api/users", headers=headers).status_code == 401
+
+
+def test_negative_or_zero_quantity_rejected():
+    headers, _ = _member_headers()
+    for qty in (0, -1):
+        payload = {
+            "customer_name": "Audit", "order_type": "takeaway", "payment_method": "cashier",
+            "items": [_first_product_item(qty)],
+        }
+        res = client.post("/api/public/orders", json=payload, headers=headers)
+        assert res.status_code == 422, (qty, res.json())
+
+
+def test_status_endpoint_cannot_cancel_paid_order():
+    from app.models import Shift
+    cashier = get_or_create_test_user("test_cashier_audit@kopipos.com", "cashier")
+    headers = {"Authorization": f"Bearer {create_access_token(data={'sub': str(cashier.id), 'role': 'cashier'})}"}
+    db = SessionLocal()
+    try:
+        if not db.query(Shift).filter(Shift.cashier_id == cashier.id, Shift.status == "open").first():
+            db.add(Shift(cashier_id=cashier.id, opening_balance=0.0, status="open"))
+            db.commit()
+    finally:
+        db.close()
+
+    res = client.post("/api/orders", json={
+        "order_type": "takeaway", "payment_method": "cash", "items": [_first_product_item(1)],
+    }, headers=headers)
+    assert res.status_code == 201, res.json()
+    order_id = res.json()["id"]
+
+    for target in ("cancelled", "refunded", "voided", "pending"):
+        r = client.patch(f"/api/orders/{order_id}/status?status={target}", headers=headers)
+        assert r.status_code == 400, (target, r.json())
+    assert client.get(f"/api/orders/{order_id}", headers=headers).json()["status"] == "paid"
+
+
+def test_pending_cashier_order_can_be_cancelled_and_points_refunded():
+    from app.models import Member
+    cashier = get_or_create_test_user("test_cashier_audit2@kopipos.com", "cashier")
+    c_headers = {"Authorization": f"Bearer {create_access_token(data={'sub': str(cashier.id), 'role': 'cashier'})}"}
+    m_headers, member = _member_headers()
+    db = SessionLocal()
+    try:
+        db.query(Member).filter(Member.id == member["id"]).update({Member.points: 10})
+        db.commit()
+    finally:
+        db.close()
+
+    res = client.post("/api/public/orders", json={
+        "customer_name": "Audit", "order_type": "takeaway", "payment_method": "cashier",
+        "redeem_points": 2, "items": [_first_product_item(1)],
+    }, headers=m_headers)
+    assert res.status_code == 201, res.json()
+    oid = res.json()["id"]
+    assert client.get("/api/member/profile", headers=m_headers).json()["points"] == 8
+
+    r = client.patch(f"/api/orders/{oid}/status?status=cancelled", headers=c_headers)
+    assert r.status_code == 200, r.json()
+    assert client.get("/api/member/profile", headers=m_headers).json()["points"] == 10
+    # Status akhir: tidak bisa dihidupkan lagi
+    assert client.patch(f"/api/orders/{oid}/status?status=paid", headers=c_headers).status_code == 400
+
+
+def test_supervisor_pin_is_hashed_and_validated():
+    from app.utils.auth import find_supervisor_by_pin
+    owner = get_or_create_test_user("test_owner_pin@kopipos.com", "owner")
+    o_headers = {"Authorization": f"Bearer {create_access_token(data={'sub': str(owner.id), 'role': 'owner'})}"}
+
+    assert client.put(f"/api/users/{owner.id}", json={"pin": "12"}, headers=o_headers).status_code == 422
+    assert client.put(f"/api/users/{owner.id}", json={"pin": "1234"}, headers=o_headers).status_code == 422
+    assert client.put(f"/api/users/{owner.id}", json={"pin": "8642"}, headers=o_headers).status_code == 200
+
+    db = SessionLocal()
+    try:
+        stored = db.query(User).filter(User.id == owner.id).first().pin
+        assert stored.startswith("$2") and stored != "8642"
+        found = find_supervisor_by_pin(db, "8642")
+        assert found is not None and found.role in ("owner", "supervisor")
+        assert find_supervisor_by_pin(db, "0000") is None
+    finally:
+        db.close()

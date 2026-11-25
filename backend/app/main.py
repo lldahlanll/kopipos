@@ -15,6 +15,26 @@ import app.models  # noqa
 import os
 from app.config import settings as _settings
 
+def _hash_plaintext_pins():
+    """Ubah PIN lama yang masih tersimpan polos menjadi hash bcrypt (idempotent)."""
+    from app.database import SessionLocal
+    from app.models import User
+    from app.utils.auth import hash_password, is_hashed
+    db = SessionLocal()
+    try:
+        users = db.query(User).filter(User.pin.isnot(None)).all()
+        changed = 0
+        for u in users:
+            if u.pin and not is_hashed(u.pin):
+                u.pin = hash_password(u.pin)
+                changed += 1
+        if changed:
+            db.commit()
+            print(f"[KopiPOS] 🔒 {changed} PIN supervisor di-hash")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
@@ -27,13 +47,13 @@ async def lifespan(app: FastAPI):
             conn.commit()
             print("[KopiPOS] ➕ Column orders.payment_token added successfully or already exists")
         except Exception:
-            pass
+            conn.rollback()  # kolom sudah ada — reset transaksi agar perintah berikutnya tidak ikut gagal
         try:
             conn.execute(text("ALTER TABLE orders ADD COLUMN payment_url VARCHAR(255)"))
             conn.commit()
             print("[KopiPOS] ➕ Column orders.payment_url added successfully or already exists")
         except Exception:
-            pass
+            conn.rollback()  # kolom sudah ada — reset transaksi agar perintah berikutnya tidak ikut gagal
         # Buat tabel idempotency_keys jika belum ada (untuk prevent double order)
         try:
             conn.execute(text("""
@@ -49,8 +69,24 @@ async def lifespan(app: FastAPI):
             conn.commit()
             print("[KopiPOS] ✅ Table idempotency_keys ready")
         except Exception as e:
+            conn.rollback()
             print(f"[KopiPOS] idempotency_keys migration note: {e}")
 
+        # PIN supervisor: perlebar kolom agar muat hash bcrypt (60 karakter)
+        if engine.dialect.name == "postgresql":
+            try:
+                conn.execute(text("ALTER TABLE users ALTER COLUMN pin TYPE VARCHAR(255)"))
+                conn.execute(text("ALTER TABLE users ALTER COLUMN pin DROP DEFAULT"))
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                print(f"[KopiPOS] users.pin migration note: {e}")
+
+    try:
+        _hash_plaintext_pins()
+    except Exception as e:
+        # Jangan gagalkan startup; PIN polos tetap ditolak oleh find_supervisor_by_pin.
+        print(f"[KopiPOS] ⚠️  Gagal meng-hash PIN lama: {e}")
     seed_admin()
     # ── Startup log ──
     from app.config import settings, EFFECTIVE_SECRET_KEY

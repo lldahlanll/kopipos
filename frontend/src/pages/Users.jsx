@@ -7,7 +7,7 @@ export default function Users() {
   const [users, setUsers] = useState([]);
   const [showModal, setShowModal] = useState(false);
   const [editItem, setEditItem] = useState(null);
-  const [form, setForm] = useState({ name: '', email: '', password: '', role: 'cashier', is_active: true });
+  const [form, setForm] = useState({ name: '', email: '', password: '', pin: '', role: 'cashier', is_active: true });
   const [saving, setSaving] = useState(false);
 
   const load = () => {
@@ -20,13 +20,13 @@ export default function Users() {
 
   const openCreate = () => {
     setEditItem(null);
-    setForm({ name: '', email: '', password: '', role: 'cashier', is_active: true });
+    setForm({ name: '', email: '', password: '', pin: '', role: 'cashier', is_active: true });
     setShowModal(true);
   };
 
   const openEdit = (u) => {
     setEditItem(u);
-    setForm({ name: u.name, email: u.email, password: '', role: u.role, is_active: u.is_active });
+    setForm({ name: u.name, email: u.email, password: '', pin: '', role: u.role, is_active: u.is_active });
     setShowModal(true);
   };
 
@@ -36,6 +36,7 @@ export default function Users() {
     try {
       const payload = { ...form };
       if (editItem && !payload.password) delete payload.password;
+      if (!payload.pin) delete payload.pin;
       
       if (editItem) {
         await updateUser(editItem.id, payload);
@@ -180,6 +181,25 @@ export default function Users() {
                     minLength={6}
                   />
                 </div>
+                {(form.role === 'owner' || form.role === 'supervisor') && (
+                  <div className="mb-4">
+                    <label htmlFor="user-pin" className="block text-sm font-medium text-text-secondary mb-1.5">
+                      PIN Supervisor (4 digit) <span className="text-text-muted text-xs font-normal">— untuk otorisasi void/refund{editItem ? ', kosongkan jika tidak ingin ganti' : ''}</span>
+                    </label>
+                    <input
+                      id="user-pin"
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="new-password"
+                      pattern="\d{4}"
+                      maxLength={4}
+                      className="w-full px-3.5 py-2.5 bg-surface-2 border border-border rounded-md text-text-primary font-sans text-sm transition-all outline-none focus:border-primary focus:ring-3 focus:ring-primary/30 placeholder-text-muted tracking-[0.5em]"
+                      value={form.pin}
+                      onChange={(e) => setForm({ ...form, pin: e.target.value.replace(/\D/g, '').slice(0, 4) })}
+                      placeholder="••••"
+                    />
+                  </div>
+                )}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-text-secondary mb-1.5">Role</label>

@@ -10,6 +10,7 @@ from pydantic import BaseModel, field_validator
 router = APIRouter(prefix="/api/users", tags=["Users"])
 
 from app.utils.sanitize import sanitize_text, sanitize_email
+from app.schemas.auth import VALID_ROLES, _validate_pin
 
 class UserUpdate(BaseModel):
     name: str | None = None
@@ -17,6 +18,20 @@ class UserUpdate(BaseModel):
     password: str | None = None
     role: str | None = None
     is_active: bool | None = None
+    # PIN supervisor 4 digit (hanya dipakai owner/supervisor untuk void/refund)
+    pin: str | None = None
+
+    @field_validator("pin")
+    @classmethod
+    def validate_pin(cls, v):
+        return _validate_pin(v)
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v):
+        if v is not None and v not in VALID_ROLES:
+            raise ValueError(f"Role harus salah satu dari: {', '.join(sorted(VALID_ROLES))}")
+        return v
 
     @field_validator("name")
     @classmethod
@@ -44,7 +59,8 @@ def create_user(request: RegisterRequest, db: Session = Depends(get_db), current
         name=request.name,
         email=request.email,
         password_hash=hash_password(request.password),
-        role=request.role
+        role=request.role,
+        pin=hash_password(request.pin) if request.pin else None,
     )
     db.add(user)
     db.commit()
@@ -68,6 +84,8 @@ def update_user(user_id: int, request: UserUpdate, db: Session = Depends(get_db)
         user.role = request.role
     if request.password:
         user.password_hash = hash_password(request.password)
+    if request.pin:
+        user.pin = hash_password(request.pin)
     if request.is_active is not None:
         if user.id == current_user.id and not request.is_active:
             raise HTTPException(status_code=400, detail="Tidak dapat menonaktifkan akun sendiri")

@@ -1,5 +1,6 @@
 import os
 import secrets
+import time
 from typing import Optional
 from pydantic_settings import BaseSettings
 
@@ -28,6 +29,10 @@ class Settings(BaseSettings):
     # Lokal : http://localhost:8000
     # Server: https://kopipos.ephinu.my.id
     APP_URL: Optional[str] = None
+
+    # Zona waktu toko. Dipakai untuk "hari ini" (nomor order, laporan, shift)
+    # dan zona waktu session PostgreSQL.
+    APP_TIMEZONE: str = "Asia/Jakarta"
 
     # Midtrans Integration
     MIDTRANS_SERVER_KEY: Optional[str] = None
@@ -85,6 +90,12 @@ def _resolve_secret_key(app_env: str, provided_key: Optional[str]) -> str:
 
 # ── Singleton settings & resolved key ────────────────────────────────────────
 settings = Settings()
+
+# Samakan zona waktu proses dengan toko, agar date.today()/datetime.now()
+# tidak memakai UTC dari container (hari baru jam 07:00 WIB).
+if settings.APP_TIMEZONE and hasattr(time, "tzset"):
+    os.environ["TZ"] = settings.APP_TIMEZONE
+    time.tzset()
 
 # EFFECTIVE_SECRET_KEY di-resolve SATU KALI saat modul pertama kali diimport.
 # Gunakan konstanta ini di seluruh aplikasi (bukan settings.SECRET_KEY).

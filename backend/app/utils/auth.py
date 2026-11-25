@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import bcrypt
@@ -26,7 +26,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (
+    expire = datetime.now(timezone.utc) + (
         expires_delta or timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     to_encode.update({"exp": expire})
@@ -47,6 +47,10 @@ def get_current_user(
         )
         user_id = payload.get("sub")
         if user_id is None:
+            raise credentials_exception
+        # Token member (self-order) memakai SECRET_KEY yang sama dengan token staf.
+        # Tanpa cek ini, member dengan id=N bisa bertindak sebagai User id=N.
+        if payload.get("role") == "member":
             raise credentials_exception
     except JWTError:
         raise credentials_exception
@@ -77,6 +81,30 @@ def require_roles(allowed_roles: list[str]):
 
 
 require_pos_access = require_roles(["owner", "cashier"])
+
+
+# ── PIN Supervisor ───────────────────────────────────────────────────────────
+# PIN disimpan sebagai hash bcrypt (sama seperti password).
+PIN_PATTERN = r"^\d{4}$"
+
+
+def is_hashed(value: Optional[str]) -> bool:
+    return bool(value) and value.startswith("$2")
+
+
+def find_supervisor_by_pin(db: Session, pin: str) -> Optional[User]:
+    """Cari owner/supervisor aktif yang PIN-nya cocok. None jika tidak ada."""
+    if not pin:
+        return None
+    candidates = db.query(User).filter(
+        User.role.in_(["owner", "supervisor"]),
+        User.is_active == True,  # noqa: E712
+        User.pin.isnot(None),
+    ).all()
+    for u in candidates:
+        if is_hashed(u.pin) and verify_password(pin, u.pin):
+            return u
+    return None
 
 
 member_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/member/login")

@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status, Request
 from sqlalchemy.orm import Session, joinedload
@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models import Order, OrderItem, Product, Modifier, User, Shift, OrderAuditLog, OrderRefund, OrderRefundItem, IdempotencyKey
 from app.schemas.order import OrderCreate, OrderResponse, OrderListResponse, OrderVoidRequest, OrderRefundRequest, BulkReviewRequest
-from app.utils.auth import get_current_user, require_pos_access, require_owner
+from app.utils.auth import get_current_user, require_pos_access, require_owner, find_supervisor_by_pin
 from app.limiter import limiter
 from app.services import OrderService
 
@@ -34,7 +34,7 @@ def create_order(request: Request, data: OrderCreate, db: Session = Depends(get_
     actor_id = f"cashier_{current_user.id}"
     if idempotency_key:
         from datetime import timedelta
-        cutoff = datetime.utcnow() - timedelta(minutes=5)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
         existing = (
             db.query(IdempotencyKey)
             .filter(
@@ -245,12 +245,20 @@ def confirm_order(id: int, db: Session = Depends(get_db), current_user: User = D
     db.refresh(order)
     return order
 
+# Alur status yang boleh lewat endpoint /status (alur dapur → serah terima).
+# Pembatalan order yang sudah dibayar, void, dan refund WAJIB lewat endpoint
+# /void atau /refund yang meminta PIN supervisor.
+ALLOWED_STATUS_TRANSITIONS = {
+    "pending": {"cancelled"},           # tolak self-order yang belum dibayar
+    "confirmed": {"preparing", "ready", "paid"},
+    "preparing": {"ready", "paid"},
+    "ready": {"paid"},
+}
+KITCHEN_ALLOWED_TARGETS = {"preparing", "ready", "paid"}
+
+
 @router.patch("/{id}/status", response_model=OrderResponse)
 def update_order_status(id: int, status: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    valid_statuses = {"confirmed", "preparing", "ready", "paid", "cancelled", "voided", "refunded", "partially_refunded"}
-    if status not in valid_statuses:
-        raise HTTPException(status_code=400, detail="Status tidak valid")
-    
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.member)
@@ -261,28 +269,34 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
     # H-2: cashier may only update orders assigned to them (except if cashier is not assigned yet, i.e. None, e.g. for self-orders)
     if current_user.role == "cashier" and order.cashier_id is not None and order.cashier_id != current_user.id:
         raise HTTPException(status_code=403, detail="Tidak diizinkan mengubah order ini")
-    if current_user.role == "kitchen" and status not in {"preparing", "ready", "paid"}:
+    if current_user.role == "kitchen" and status not in KITCHEN_ALLOWED_TARGETS:
         raise HTTPException(status_code=403, detail="Peran dapur hanya diizinkan memperbarui status ke preparing, ready, atau paid")
-    
+
     old_status = order.status
+    if status not in ALLOWED_STATUS_TRANSITIONS.get(old_status, set()):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Perubahan status '{old_status}' → '{status}' tidak diizinkan. "
+                   "Gunakan fitur Void/Refund (dengan PIN supervisor) untuk membatalkan order yang sudah dibayar.",
+        )
+    # QRIS pending masih bisa dibayar pelanggan kapan saja; pembatalannya ditangani
+    # oleh callback Midtrans (expire/cancel) agar uang tidak masuk ke order yang batal.
+    if old_status == "pending" and order.payment_method == "qris":
+        raise HTTPException(status_code=400, detail="Order QRIS yang belum dibayar akan dibatalkan otomatis oleh Midtrans saat kedaluwarsa")
+
     order.status = status
-    
-    # Handle points modification on status transition
-    if order.member_id and order.member:
-        PAID_STATUSES = {"confirmed", "preparing", "ready", "paid"}
-        
-        # Transitioning from pending to paid
-        if old_status == "pending" and status in PAID_STATUSES:
-            order.member.points += order.points_earned
-            
-        # Transitioning from paid to cancelled/voided/refunded
-        elif old_status in PAID_STATUSES and status in {"cancelled", "voided", "refunded"}:
-            order.member.points = order.member.points + order.points_redeemed - order.points_earned
-            
-        # Transitioning from pending to cancelled/voided/refunded
-        elif old_status == "pending" and status in {"cancelled", "voided", "refunded"}:
-            order.member.points += order.points_redeemed
-            
+
+    # pending → cancelled: kembalikan poin yang sudah dipakai member
+    if old_status == "pending" and status == "cancelled" and order.member_id and order.member:
+        order.member.points += order.points_redeemed
+
+    db.add(OrderAuditLog(
+        order_id=order.id,
+        event="status_changed",
+        cashier_id=current_user.id,
+        details=f"Status {old_status} → {status} oleh {current_user.name} ({current_user.role})",
+    ))
+
     # If the cashier is marking a self-order (e.g. QRIS) as "paid" (completed/handed over) and there's no cashier assigned yet,
     # assign this cashier and their open shift to this order so it is correctly recorded.
     if current_user.role == "cashier" and status == "paid" and not order.cashier_id:
@@ -296,7 +310,8 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
     return order
 
 @router.post("/{id}/void", response_model=OrderResponse)
-def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+@limiter.limit("5/minute")
+def void_order(request: Request, id: int, payload: OrderVoidRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     order = db.query(Order).options(
         joinedload(Order.shift),
         joinedload(Order.refunds),
@@ -304,9 +319,9 @@ def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db)
     ).filter(Order.id == id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
-    
+
     # Check supervisor PIN
-    supervisor = db.query(User).filter(User.role.in_(["owner", "supervisor"]), User.pin == payload.supervisor_pin).first()
+    supervisor = find_supervisor_by_pin(db, payload.supervisor_pin)
     if not supervisor:
         raise HTTPException(status_code=401, detail="Supervisor PIN tidak valid")
         
@@ -343,7 +358,8 @@ def void_order(id: int, payload: OrderVoidRequest, db: Session = Depends(get_db)
     return order
 
 @router.post("/{id}/refund", response_model=OrderResponse)
-def refund_order(id: int, payload: OrderRefundRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+@limiter.limit("5/minute")
+def refund_order(request: Request, id: int, payload: OrderRefundRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.refunds).joinedload(OrderRefund.items),
@@ -351,9 +367,9 @@ def refund_order(id: int, payload: OrderRefundRequest, db: Session = Depends(get
     ).filter(Order.id == id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
-        
+
     # Check supervisor PIN
-    supervisor = db.query(User).filter(User.role.in_(["owner", "supervisor"]), User.pin == payload.supervisor_pin).first()
+    supervisor = find_supervisor_by_pin(db, payload.supervisor_pin)
     if not supervisor:
         raise HTTPException(status_code=401, detail="Supervisor PIN tidak valid")
         
