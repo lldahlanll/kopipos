@@ -28,8 +28,12 @@ services:
       # Gambar produk & logo disimpan di volume, bukan di dalam container,
       # supaya tidak hilang saat rebuild / recreate.
       UPLOADS_DIR: /data/uploads
+      QZ_PRIVATE_KEY_PATH: /run/secrets/qz-private-key.pem
     volumes:
       - kopipos_uploads:/data/uploads
+      # Kunci tanda tangan QZ Tray (cetak struk) — dipasang read-only, tidak ikut di image.
+      # File ini tidak di-commit; lokasinya bisa diubah lewat QZ_PRIVATE_KEY_FILE di .env.
+      - ${QZ_PRIVATE_KEY_FILE:-./backend/private-key.pem}:/run/secrets/qz-private-key.pem:ro
     # Port 8000 sengaja TIDAK dibuka ke host — hanya diakses lewat
     # reverse proxy nginx di container frontend (/api, /uploads).
     expose:

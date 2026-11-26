@@ -47,3 +47,6 @@ backend/.secret_key
 
 # RSA private key untuk QZ Tray signing (JANGAN commit!)
 backend/private-key.pem
+
+# Log
+*.log

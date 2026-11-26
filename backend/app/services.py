@@ -1,3 +1,4 @@
+import logging
 from typing import List, Tuple
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
@@ -6,7 +7,7 @@ import math
 from datetime import datetime
 from typing import Optional
 from app.models import Product, Modifier, ModifierGroup, Order, OrderItem, OrderItemModifier, OrderAuditLog, Promo
-from app.utils.order import gen_order_num as _gen_order_num
+from app.utils.order import insert_order_with_number
 
 class ValidationService:
     @staticmethod
@@ -244,17 +245,8 @@ class OrderService:
             promo_name=promo.name if promo else None,
         )
         
-        # Retry logic for concurrent duplicate order_number
-        for attempt in range(5):
-            order.order_number = _gen_order_num(db)
-            db.add(order)
-            try:
-                db.flush()
-                break
-            except IntegrityError:
-                db.rollback()
-                if attempt == 4:
-                    raise HTTPException(status_code=500, detail="Gagal membuat nomor order, coba lagi")
+        # Nomor order unik; bentrok karena order bersamaan → coba nomor berikutnya
+        insert_order_with_number(db, order)
                     
         # Save order items and modifier snapshots
         for oi in order_items:
@@ -285,13 +277,18 @@ class OrderService:
         return order
 
 
+logger = logging.getLogger("kopipos.midtrans")
+MIDTRANS_PUBLIC_ERROR = "Pembayaran QRIS sedang tidak dapat diproses. Silakan coba lagi atau pilih Bayar di Kasir."
+
+
 class MidtransService:
     @staticmethod
     def get_headers() -> dict:
         import base64
         from app.config import settings
         if not settings.MIDTRANS_SERVER_KEY or settings.MIDTRANS_SERVER_KEY.startswith("SB-Mid-server-YOUR_"):
-            raise HTTPException(status_code=400, detail="Metode pembayaran QRIS online belum dapat digunakan karena kunci server Midtrans (MIDTRANS_SERVER_KEY) belum dikonfigurasi di file .env")
+            logger.error("MIDTRANS_SERVER_KEY belum diisi di .env — pembayaran QRIS online tidak bisa dipakai")
+            raise HTTPException(status_code=400, detail="Pembayaran QRIS online belum tersedia. Silakan pilih Bayar di Kasir.")
         
         auth_string = f"{settings.MIDTRANS_SERVER_KEY}:"
         auth_base64 = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
@@ -329,9 +326,16 @@ class MidtransService:
             
         headers = MidtransService.get_headers()
         
-        with httpx.Client(timeout=15.0) as client:
-            response = client.post(url, json=payload, headers=headers)
-            if response.status_code != 201:
-                detail_msg = f"Midtrans API Error ({response.status_code}): {response.text}"
-                raise HTTPException(status_code=502, detail=detail_msg)
-            return response.json()
+        # Detail error Midtrans (bisa memuat info akun/merchant) hanya dicatat di
+        # log server; pelanggan cukup mendapat pesan umum.
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as e:
+            logger.error("Midtrans tidak dapat dihubungi untuk order %s: %r", order_id, e)
+            raise HTTPException(status_code=502, detail=MIDTRANS_PUBLIC_ERROR)
+        if response.status_code != 201:
+            logger.error("Midtrans menolak transaksi order %s (HTTP %s): %s",
+                         order_id, response.status_code, response.text[:1000])
+            raise HTTPException(status_code=502, detail=MIDTRANS_PUBLIC_ERROR)
+        return response.json()

@@ -21,11 +21,13 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# Menjalankan Migrasi Database (Alembic)
-alembic upgrade head
-
-# Menjalankan Server
+# Menjalankan Server — skema database dibuat otomatis saat start
 uvicorn app.main:app --reload --port 8000
+
+# Sekali saja setelah server pertama kali jalan: tandai database di revisi
+# baseline Alembic, supaya migrasi berikutnya bisa dijalankan dengan
+# `alembic upgrade head` (lihat alembic/versions/0b5e11ae2026_*.py)
+alembic stamp head
 ```
 
 ### 2. Frontend (React + Vite)

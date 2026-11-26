@@ -1,0 +1,25 @@
+# Yang tidak boleh / tidak perlu masuk image backend.
+# Rahasia & kunci — dipasang saat runtime (lihat docker-compose.yml), bukan ditanam di image
+.env
+.env.*
+.secret_key
+*.pem
+*.key
+
+# Data & log lokal
+*.db
+*.sqlite3
+*.log
+kopipos/
+
+# Lingkungan & cache Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Lain-lain
+.DS_Store
+test_api.sh

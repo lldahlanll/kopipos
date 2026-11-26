@@ -1,3 +1,5 @@
+import math
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -37,16 +39,46 @@ def register_member(request: Request, data: MemberRegister, db: Session = Depend
         "member": new_member
     }
 
+# PIN member hanya 6 digit. Rate limit per IP saja tidak cukup (penyerang bisa
+# berganti IP), jadi akun juga dikunci sementara setelah PIN salah berulang.
+MAX_FAILED_LOGINS = 5
+LOCKOUT_MINUTES = 15
+
+
 @router.post("/login", response_model=MemberAuthResponse)
 @limiter.limit("10/minute")
 def login_member(request: Request, data: MemberLogin, db: Session = Depends(get_db)):
     member = db.query(models.Member).filter(models.Member.phone == data.phone).first()
+    now = datetime.now(timezone.utc)
+
+    if member and member.locked_until:
+        locked_until = member.locked_until
+        if locked_until.tzinfo is None:  # SQLite menyimpan tanpa zona waktu
+            locked_until = locked_until.replace(tzinfo=timezone.utc)
+        if locked_until > now:
+            minutes = max(1, math.ceil((locked_until - now).total_seconds() / 60))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Terlalu banyak percobaan PIN salah. Coba lagi dalam {minutes} menit.",
+            )
+
     if not member or not verify_password(data.pin, member.password_hash):
+        if member:
+            member.failed_login_attempts = (member.failed_login_attempts or 0) + 1
+            if member.failed_login_attempts >= MAX_FAILED_LOGINS:
+                member.locked_until = now + timedelta(minutes=LOCKOUT_MINUTES)
+                member.failed_login_attempts = 0
+            db.commit()
         raise HTTPException(
             status_code=401,
             detail="Nomor HP atau PIN salah"
         )
-    
+
+    if member.failed_login_attempts or member.locked_until:
+        member.failed_login_attempts = 0
+        member.locked_until = None
+        db.commit()
+
     access_token = create_access_token(data={"sub": str(member.id), "role": "member"})
     return {
         "access_token": access_token,

@@ -155,12 +155,8 @@ def test_public_endpoints_and_checkout():
     size_mod = kopi_susu["variants"][0]
     sugar_mod = kopi_susu["modifiers"][0]
 
-    # 3. Test /api/public/validate-session
-    res_session = client.get("/api/public/validate-session?table=1&token=xyz")
-    assert res_session.status_code == 200
-    data_session = res_session.json()
-    assert data_session["status"] == "success"
-    assert data_session["valid"] is True
+    # 3. Endpoint validasi sesi meja palsu (selalu "valid") sudah dihapus
+    assert client.get("/api/public/validate-session?table=1&token=xyz").status_code == 404
 
     # 4. Register a member to do the checkout
     import uuid
@@ -1099,3 +1095,168 @@ def test_order_status_only_visible_to_its_member():
     # Token staf juga tidak bisa dipakai untuk endpoint member
     staff = _headers_for("test_cashier_status@kopipos.com", "cashier")
     assert client.get(url, headers=staff).status_code == 401
+
+
+# ── Temuan sedang & rendah (#13–#19) ───────────────────────────────────────
+
+def _set_member_points(member_id, points):
+    from app.database import SessionLocal
+    from app.models import Member
+    db = SessionLocal()
+    db.query(Member).filter(Member.id == member_id).update({Member.points: points})
+    db.commit()
+    db.close()
+
+
+def _member_points(member_id):
+    from app.database import SessionLocal
+    from app.models import Member
+    db = SessionLocal()
+    pts = db.query(Member).filter(Member.id == member_id).first().points
+    db.close()
+    return pts
+
+
+def test_member_login_locks_after_repeated_wrong_pin():
+    from app.limiter import limiter
+    from app.routers.member import MAX_FAILED_LOGINS
+    _, member = _member_headers()
+    phone = member["phone"]
+    limiter.reset()
+    for _ in range(MAX_FAILED_LOGINS):
+        r = client.post("/api/member/login", json={"phone": phone, "pin": "999999"})
+        assert r.status_code == 401
+    # Terkunci — PIN benar pun ditolak sampai masa kunci habis
+    r = client.post("/api/member/login", json={"phone": phone, "pin": "246810"})
+    assert r.status_code == 429 and "Coba lagi dalam" in r.json()["detail"]
+
+    # Setelah masa kunci lewat, PIN benar diterima dan hitungan direset
+    from app.database import SessionLocal
+    from app.models import Member
+    from datetime import datetime, timedelta, timezone
+    db = SessionLocal()
+    m = db.query(Member).filter(Member.phone == phone).first()
+    m.locked_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+    db.commit(); db.close()
+    limiter.reset()
+    assert client.post("/api/member/login", json={"phone": phone, "pin": "246810"}).status_code == 200
+    # Nomor yang tidak terdaftar tetap dijawab sama (tidak membocorkan apa pun)
+    assert client.post("/api/member/login", json={"phone": "081100000000", "pin": "123456"}).status_code == 401
+
+
+def test_midtrans_error_details_not_sent_to_customer(monkeypatch):
+    import httpx
+    from fastapi import HTTPException
+    from app.config import settings
+    from app.services import MidtransService, MIDTRANS_PUBLIC_ERROR
+
+    class FakeResp:
+        status_code = 401
+        text = '{"error_messages":["Access denied, merchant M-SECRET-123 server key salah"]}'
+
+    class FakeClient:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **k): return FakeResp()
+
+    monkeypatch.setattr(settings, "MIDTRANS_SERVER_KEY", "SB-Mid-server-test")
+    monkeypatch.setattr(httpx, "Client", FakeClient)
+    try:
+        MidtransService.create_transaction("KP-TEST-1", 10000)
+        assert False, "harus gagal"
+    except HTTPException as e:
+        assert e.detail == MIDTRANS_PUBLIC_ERROR
+        assert "M-SECRET" not in e.detail and "401" not in e.detail
+
+    # Kunci belum diisi: pesan tidak menyebut .env / nama variabel
+    monkeypatch.setattr(settings, "MIDTRANS_SERVER_KEY", "")
+    try:
+        MidtransService.get_headers()
+        assert False, "harus gagal"
+    except HTTPException as e:
+        assert ".env" not in e.detail and "MIDTRANS" not in e.detail
+
+
+def test_order_number_collision_retries_next_number(monkeypatch):
+    """Dua order bersamaan bisa membaca nomor terakhir yang sama → yang kalah coba lagi."""
+    import app.utils.order as order_utils
+    headers, member = _member_headers()
+    first = client.post("/api/public/orders", json={
+        "customer_name": "A", "order_type": "takeaway", "payment_method": "cashier",
+        "items": [_first_product_item(1)]}, headers=headers).json()
+
+    real_gen = order_utils.gen_order_num
+    calls = {"n": 0}
+
+    def colliding_gen(db):
+        calls["n"] += 1
+        return first["order_number"] if calls["n"] == 1 else real_gen(db)
+
+    monkeypatch.setattr(order_utils, "gen_order_num", colliding_gen)
+    r = client.post("/api/public/orders", json={
+        "customer_name": "B", "order_type": "takeaway", "payment_method": "cashier",
+        "items": [_first_product_item(1)]}, headers=headers)
+    assert r.status_code == 201, r.json()
+    assert r.json()["order_number"] != first["order_number"] and calls["n"] == 2
+
+
+def test_redeem_points_is_atomic_and_refunded_on_cancel():
+    from app.database import SessionLocal
+    from app.utils.order import redeem_member_points
+    headers, member = _member_headers()
+    _set_member_points(member["id"], 3)
+
+    # Saldo tidak cukup → tidak ada yang terpotong
+    db = SessionLocal()
+    assert redeem_member_points(db, member["id"], 4) is False
+    assert redeem_member_points(db, member["id"], 3) is True
+    assert redeem_member_points(db, member["id"], 1) is False  # saldo sudah 0
+    db.rollback(); db.close()
+    assert _member_points(member["id"]) == 3
+
+    r = client.post("/api/public/orders", json={
+        "customer_name": "Poin", "order_type": "takeaway", "payment_method": "cashier",
+        "redeem_points": 2, "items": [_first_product_item(1)]}, headers=headers)
+    assert r.status_code == 201, r.json()
+    assert _member_points(member["id"]) == 1
+    r2 = client.post("/api/public/orders", json={
+        "customer_name": "Poin", "order_type": "takeaway", "payment_method": "cashier",
+        "redeem_points": 2, "items": [_first_product_item(1)]}, headers=headers)
+    assert r2.status_code == 400 and "tidak mencukupi" in r2.json()["detail"]
+    assert _member_points(member["id"]) == 1
+
+    # Dibatalkan kasir → poin kembali
+    cashier = _headers_for("test_cashier_points@kopipos.com", "cashier")
+    r3 = client.patch(f"/api/orders/{r.json()['id']}/status?status=cancelled", headers=cashier)
+    assert r3.status_code == 200, r3.json()
+    assert _member_points(member["id"]) == 3
+
+
+def test_midtrans_callback_processed_once():
+    import hashlib
+    from app.config import settings
+    headers, member = _member_headers()
+    _set_member_points(member["id"], 0)
+    order = client.post("/api/public/orders", json={
+        "customer_name": "QR", "order_type": "takeaway", "payment_method": "cashier",
+        "items": [_first_product_item(20)]}, headers=headers).json()
+    # Jadikan order QRIS pending (tanpa memanggil Midtrans sungguhan)
+    from app.database import SessionLocal
+    from app.models import Order
+    db = SessionLocal()
+    o = db.query(Order).get(order["id"]); o.payment_method = "qris"; earned = o.points_earned
+    db.commit(); db.close()
+    assert earned > 0
+
+    key = settings.MIDTRANS_SERVER_KEY or ""
+    gross = f"{order['total']:.2f}"
+    sig = hashlib.sha512(f"{order['order_number']}200{gross}{key}".encode()).hexdigest()
+    body = {"order_id": order["order_number"], "status_code": "200", "gross_amount": gross,
+            "signature_key": sig, "transaction_status": "settlement", "payment_type": "qris"}
+    for _ in range(2):  # notifikasi terkirim dua kali
+        assert client.post("/api/public/payments/midtrans-callback", json=body).status_code == 200
+    assert _member_points(member["id"]) == earned
+
+    bad = {**body, "signature_key": "0" * 128}
+    assert client.post("/api/public/payments/midtrans-callback", json=bad).status_code == 403

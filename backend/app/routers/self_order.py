@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 import time
@@ -9,8 +10,8 @@ from app.models import Product, Category, Modifier, Member, Order, OrderItem, Or
 from app.schemas.order import OrderItemCreate, OrderStatusResponse, SelfOrderCreate
 from app.utils.auth import get_current_member
 from app.limiter import limiter
-from app.services import ValidationService, PricingService
-from app.utils.order import gen_order_num as _gen_order_num
+from app.services import ValidationService, PricingService, MIDTRANS_PUBLIC_ERROR
+from app.utils.order import add_member_points, insert_order_with_number, lock_order, redeem_member_points
 
 router = APIRouter(prefix="/api/public", tags=["Public"])
 
@@ -28,10 +29,6 @@ def get_store_info(db: Session = Depends(get_db)):
     for s in settings_records:
         result[s.key] = s.value
     return result
-
-@router.get("/validate-session")
-def validate_session(table: Optional[str] = Query(None), token: Optional[str] = Query(None)):
-    return {"status": "success", "valid": True}
 
 @router.get("/menu")
 def get_public_menu(db: Session = Depends(get_db)):
@@ -279,12 +276,9 @@ def create_self_order(
 
     final_total = max(subtotal - discount_val, 0.0)
 
-    # Deduct redeemed points immediately to lock them, but do NOT add earned points yet
     earned_points = int(final_total // 10000)
-    current_member.points = current_member.points - redeem_points_actual
 
     order = Order(
-        order_number=_gen_order_num(db),
         order_type=data.order_type,
         payment_method=data.payment_method,
         customer_name=current_member.name,
@@ -298,8 +292,16 @@ def create_self_order(
         points_redeemed=redeem_points_actual,
         points_earned=earned_points
     )
-    db.add(order)
-    db.flush()
+    # Nomor order dibuat dulu (retry-nya me-rollback session), baru poin dipotong.
+    insert_order_with_number(db, order)
+
+    # Potong poin yang ditukar sekarang (ditahan sampai order selesai/batal), tapi
+    # poin yang didapat baru ditambahkan setelah dibayar. Atomik: dua order
+    # bersamaan tidak bisa memakai saldo poin yang sama.
+    if redeem_points_actual and not redeem_member_points(db, current_member.id, redeem_points_actual):
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Saldo poin tidak mencukupi")
+
     for oi in order_items:
         oi.order_id = order.id
         db.add(oi)
@@ -351,9 +353,10 @@ def create_self_order(
         except HTTPException as he:
             db.rollback()
             raise he
-        except Exception as e:
+        except Exception:
             db.rollback()
-            raise HTTPException(status_code=500, detail=f"Gagal memproses transaksi ke Midtrans: {str(e)}")
+            logging.getLogger("kopipos.midtrans").exception("Gagal membuat transaksi Midtrans untuk order %s", order.order_number)
+            raise HTTPException(status_code=502, detail=MIDTRANS_PUBLIC_ERROR)
 
     db.commit()
     db.refresh(order)
@@ -401,6 +404,7 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
     from app.config import settings
     from app.models import OrderAuditLog
     import hashlib
+    import hmac
     
     order_id = payload.get("order_id")
     status_code = payload.get("status_code")
@@ -415,9 +419,12 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
     raw_str = f"{order_id}{status_code}{gross_amount}{server_key}"
     calculated_sig = hashlib.sha512(raw_str.encode("utf-8")).hexdigest()
     
-    if calculated_sig != signature_key:
+    # Perbandingan waktu-konstan agar signature tidak bisa ditebak lewat selisih waktu respons
+    if not hmac.compare_digest(calculated_sig, str(signature_key)):
         raise HTTPException(status_code=403, detail="Tanda tangan tidak sah (Signature invalid)")
         
+    # Midtrans bisa mengirim notifikasi yang sama lebih dari sekali, bahkan bersamaan
+    lock_order(db, order_number=order_id)
     order = db.query(Order).filter(Order.order_number == order_id).first()
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
@@ -427,8 +434,7 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
             order.status = "confirmed"
             # Add earned points to member
             if order.member_id and order.points_earned > 0:
-                if order.member:
-                    order.member.points += order.points_earned
+                add_member_points(db, order.member_id, order.points_earned)
             log_paid = OrderAuditLog(
                 order_id=order.id,
                 event="payment_success",
@@ -440,8 +446,7 @@ def midtrans_callback(payload: dict, db: Session = Depends(get_db)):
             order.status = "cancelled"
             # Refund redeemed points back to member
             if order.member_id and order.points_redeemed > 0:
-                if order.member:
-                    order.member.points += order.points_redeemed
+                add_member_points(db, order.member_id, order.points_redeemed)
             log_failed = OrderAuditLog(
                 order_id=order.id,
                 event="payment_failed",

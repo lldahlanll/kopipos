@@ -73,7 +73,10 @@ async def lifespan(app: FastAPI):
             print(f"[KopiPOS] idempotency_keys migration note: {e}")
 
         # Promo pada order (tabel promos dibuat oleh create_all di atas)
+        # + penguncian login member setelah PIN salah berulang
         for ddl in (
+            "ALTER TABLE members ADD COLUMN failed_login_attempts INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE members ADD COLUMN locked_until TIMESTAMP WITH TIME ZONE",
             "ALTER TABLE orders ADD COLUMN promo_id INTEGER REFERENCES promos(id) ON DELETE SET NULL",
             "ALTER TABLE orders ADD COLUMN promo_name VARCHAR(100)",
         ):

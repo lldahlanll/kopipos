@@ -12,7 +12,7 @@ from app.services import OrderService
 
 router = APIRouter(prefix="/api/orders", tags=["Orders"])
 
-from app.utils.order import gen_order_num as _gen_order_num
+from app.utils.order import add_member_points, lock_order
 
 
 @router.post("", response_model=OrderResponse, status_code=201)
@@ -201,6 +201,7 @@ def confirm_order(id: int, payload: Optional[OrderConfirm] = None, db: Session =
     """
     from sqlalchemy import or_, and_
 
+    lock_order(db, order_id=id)  # cegah dua proses mengubah status/poin bersamaan
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.member)
@@ -248,8 +249,7 @@ def confirm_order(id: int, payload: Optional[OrderConfirm] = None, db: Session =
         # Tambah poin yang didapat (hanya untuk order yang sebelumnya pending,
         # bukan QRIS confirmed — poin QRIS sudah ditambahkan via Midtrans callback)
         if order.member_id and order.points_earned > 0:
-            if order.member:
-                order.member.points += order.points_earned
+            add_member_points(db, order.member_id, order.points_earned)
 
     if order.payment_method == "cashier":
         order.payment_method = tender
@@ -278,6 +278,7 @@ KITCHEN_ALLOWED_TARGETS = {"preparing", "ready", "paid"}
 
 @router.patch("/{id}/status", response_model=OrderResponse)
 def update_order_status(id: int, status: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
+    lock_order(db, order_id=id)  # cegah dua proses mengubah status/poin bersamaan
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.member)
@@ -306,8 +307,8 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
     order.status = status
 
     # pending → cancelled: kembalikan poin yang sudah dipakai member
-    if old_status == "pending" and status == "cancelled" and order.member_id and order.member:
-        order.member.points += order.points_redeemed
+    if old_status == "pending" and status == "cancelled" and order.member_id:
+        add_member_points(db, order.member_id, order.points_redeemed)
 
     db.add(OrderAuditLog(
         order_id=order.id,
@@ -331,6 +332,7 @@ def update_order_status(id: int, status: str, db: Session = Depends(get_db), cur
 @router.post("/{id}/void", response_model=OrderResponse)
 @limiter.limit("5/minute")
 def void_order(request: Request, id: int, payload: OrderVoidRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+    lock_order(db, order_id=id)  # cegah dua proses mengubah status/poin bersamaan
     order = db.query(Order).options(
         joinedload(Order.shift),
         joinedload(Order.refunds),
@@ -356,12 +358,12 @@ def void_order(request: Request, id: int, payload: OrderVoidRequest, db: Session
     order.status = "voided"
     
     # Handle points modification
-    if order.member_id and order.member:
+    if order.member_id:
         PAID_STATUSES = {"confirmed", "preparing", "ready", "paid"}
         if old_status == "pending":
-            order.member.points += order.points_redeemed
+            add_member_points(db, order.member_id, order.points_redeemed)
         elif old_status in PAID_STATUSES:
-            order.member.points = order.member.points + order.points_redeemed - order.points_earned
+            add_member_points(db, order.member_id, order.points_redeemed - order.points_earned)
             
     # Audit log
     log = OrderAuditLog(
@@ -379,6 +381,7 @@ def void_order(request: Request, id: int, payload: OrderVoidRequest, db: Session
 @router.post("/{id}/refund", response_model=OrderResponse)
 @limiter.limit("5/minute")
 def refund_order(request: Request, id: int, payload: OrderRefundRequest, db: Session = Depends(get_db), current_user: User = Depends(require_pos_access)):
+    lock_order(db, order_id=id)  # cegah dua proses mengubah status/poin bersamaan
     order = db.query(Order).options(
         joinedload(Order.items),
         joinedload(Order.refunds).joinedload(OrderRefund.items),
@@ -490,8 +493,8 @@ def refund_order(request: Request, id: int, payload: OrderRefundRequest, db: Ses
     if total_remaining_qty == 0:
         order.status = "refunded"
         # Refund points_redeemed and deduct points_earned
-        if order.member_id and order.member:
-            order.member.points = order.member.points + order.points_redeemed - order.points_earned
+        if order.member_id:
+            add_member_points(db, order.member_id, order.points_redeemed - order.points_earned)
     else:
         order.status = "partially_refunded"
         

@@ -10,7 +10,6 @@ export const createSelfOrder = (data, idempotencyKey) => publicClient.post('/pub
 
 export const getOrderStatus = (id) => publicClient.get(`/public/orders/${id}/status`);
 
-export const validateTableSession = (table, token) => publicClient.get('/public/validate-session', { params: { table, token } });
 
 export const registerMember = (data) => publicClient.post('/member/register', data);
 export const loginMember = (data) => publicClient.post('/member/login', data);
