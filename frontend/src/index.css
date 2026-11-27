@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Poppins:wght@600;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -44,6 +44,27 @@
   --radius-md: 10px;
   --radius-lg: 16px;
   --radius-xl: 24px;
+}
+
+/* ── Self-order pelanggan: tema terang hangat ──────────────────────────────
+   --so-brand diisi dari warna tema toko (sudah disesuaikan agar teks putih terbaca). */
+@theme inline {
+  --color-cream: #F5F3EE;
+  --color-paper: #FFFFFF;
+  --color-paper-2: #FAF9F6;
+  --color-ink: #1E1B16;
+  --color-ink-soft: #655E54;
+  --color-ink-faint: #8C8478;
+  --color-line: #E3DED4;
+  --color-line-soft: #EFEBE3;
+  --color-line-strong: #DCD6CA;
+  --color-sand: #EDE8DE;
+  --color-sunny: #F2C14E;
+  --color-sunny-soft: #FBF3DC;
+  --color-brand: var(--so-brand, #2F5D50);
+  --color-brand-soft: color-mix(in srgb, var(--so-brand, #2F5D50) 7%, white);
+  --font-display: 'Bricolage Grotesque', 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-jakarta: 'Plus Jakarta Sans', system-ui, sans-serif;
 }
 
 @layer base {
@@ -199,4 +220,28 @@
     background-size: 200% 100%;
     animation: shimmer 1.5s infinite;
   }
+}
+
+
+/* Halaman pelanggan */
+.so-root {
+  font-family: var(--font-jakarta);
+  font-size: 15px;
+  background: var(--color-cream);
+  color: var(--color-ink);
+}
+.so-root h1, .so-root h2, .so-root h3, .so-root h4 {
+  font-family: var(--font-display);
+  letter-spacing: normal;
+}
+.so-root :focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+@keyframes so-sheet-in { from { transform: translateY(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes so-fade-in { from { opacity: 0; } to { opacity: 1; } }
+.so-sheet-in { animation: so-sheet-in 220ms cubic-bezier(.2,.8,.2,1); }
+.so-fade-in { animation: so-fade-in 160ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .so-sheet-in, .so-fade-in { animation: none; }
 }

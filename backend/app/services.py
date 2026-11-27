@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 import math
 from datetime import datetime
 from typing import Optional
-from app.models import Product, Modifier, ModifierGroup, Order, OrderItem, OrderItemModifier, OrderAuditLog, Promo
+from app.models import Product, Modifier, ModifierGroup, Order, OrderItem, OrderItemModifier, OrderAuditLog, Promo, Banner
 from app.utils.order import insert_order_with_number
 
 class ValidationService:
@@ -133,6 +133,47 @@ def _as_local_aware(dt: Optional[datetime]) -> Optional[datetime]:
     if dt is None:
         return None
     return dt.astimezone() if dt.tzinfo is None else dt
+
+
+class BannerService:
+    @staticmethod
+    def is_running(banner: Banner, now: Optional[datetime] = None) -> bool:
+        """Banner tayang: aktif, dalam periode, dan (untuk banner promo) promonya berlaku."""
+        now = now or datetime.now().astimezone()
+        if not banner.is_active:
+            return False
+        starts, ends = _as_local_aware(banner.starts_at), _as_local_aware(banner.ends_at)
+        if starts and now < starts:
+            return False
+        if ends and now > ends:
+            return False
+        if banner.kind == "promo":
+            return banner.promo is not None and PromoService.is_running(banner.promo, now)
+        return True
+
+    @staticmethod
+    def running(db: Session, placement: Optional[str] = None) -> list:
+        """Banner yang sedang tayang, urut sort_order. placement: "menu" | "status"."""
+        q = db.query(Banner).options(joinedload(Banner.promo)).filter(Banner.is_active == True)  # noqa: E712
+        if placement:
+            q = q.filter(Banner.placement.in_([placement, "both"]))
+        banners = q.order_by(Banner.sort_order.asc(), Banner.id.desc()).all()
+        now = datetime.now().astimezone()
+        return [b for b in banners if BannerService.is_running(b, now)]
+
+    @staticmethod
+    def self_order_promo(db: Session, promo_id: int) -> Promo:
+        """Promo yang boleh dipakai pelanggan: berlaku DAN punya banner promo yang tayang.
+
+        Promo tanpa banner (mis. diskon karyawan) hanya bisa dipilih kasir di POS.
+        """
+        promo = db.query(Promo).filter(Promo.id == promo_id).first()
+        if not promo or not PromoService.is_running(promo):
+            raise HTTPException(status_code=400, detail="Promo sedang tidak berlaku")
+        banners = db.query(Banner).filter(Banner.kind == "promo", Banner.promo_id == promo_id).all()
+        if not any(BannerService.is_running(b) for b in banners):
+            raise HTTPException(status_code=400, detail="Promo ini tidak bisa dipakai di self-order")
+        return promo
 
 
 class PromoService:

@@ -202,6 +202,35 @@ class Promo(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class Banner(Base):
+    """Banner di halaman self-order pelanggan.
+
+    kind="promo"   → mengiklankan promo toko; mengetuknya memasang promo di keranjang.
+                     Promo hanya bisa dipakai pelanggan di self-order jika punya
+                     banner promo yang sedang tayang.
+    kind="partner" → iklan pihak lain (ditandai "Disponsori"), boleh punya tautan keluar.
+    """
+    __tablename__ = "banners"
+    id = Column(Integer, primary_key=True, index=True)
+    kind = Column(String(10), nullable=False)              # "promo" | "partner"
+    title = Column(String(80), nullable=False)
+    subtitle = Column(String(160), nullable=True)
+    sponsor_name = Column(String(80), nullable=True)       # untuk banner partner
+    image_url = Column(String(255), nullable=True)
+    link_url = Column(String(500), nullable=True)          # untuk banner partner (http/https)
+    promo_id = Column(Integer, ForeignKey("promos.id", ondelete="CASCADE"), nullable=True)
+    placement = Column(String(10), nullable=False, default="menu")  # "menu" | "status" | "both"
+    sort_order = Column(Integer, nullable=False, default=0)
+    starts_at = Column(DateTime(timezone=True), nullable=True)
+    ends_at = Column(DateTime(timezone=True), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    promo = relationship("Promo")
+
+
 class ShiftExpense(Base):
     __tablename__ = "shift_expenses"
     id = Column(Integer, primary_key=True, index=True)

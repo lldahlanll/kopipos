@@ -5,7 +5,7 @@ from fastapi.responses import FileResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.database import engine, Base
-from app.routers import auth, categories, products, modifiers, orders, reports, shifts, settings, users, self_order, member, promos
+from app.routers import auth, categories, products, modifiers, orders, reports, shifts, settings, users, self_order, member, promos, banners
 from app.routers import print_router
 from app.routers import sync as sync_router
 from app.seed import seed_admin
@@ -173,6 +173,8 @@ app.include_router(settings.router)
 app.include_router(users.router)
 app.include_router(print_router.router)
 app.include_router(self_order.router)
+app.include_router(banners.router)
+app.include_router(banners.public_router)
 app.include_router(member.router)
 app.include_router(sync_router.router)
 app.include_router(promos.router)

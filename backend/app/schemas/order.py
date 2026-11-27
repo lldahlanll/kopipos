@@ -175,6 +175,7 @@ class SelfOrderCreate(BaseModel):
     notes: Optional[str] = None
     token: Optional[str] = None
     redeem_points: Optional[int] = 0
+    promo_id: Optional[int] = None  # promo dari banner; tidak bisa digabung dengan tukar poin
     items: List[OrderItemCreate]
 
     @field_validator("customer_name", "notes")
@@ -184,17 +185,48 @@ class SelfOrderCreate(BaseModel):
             return v
         return sanitize_text(v, 200)
 
+class OrderStatusItemModifier(BaseModel):
+    modifier_group_name: str
+    modifier_name: str
+    class Config:
+        from_attributes = True
+
+class OrderStatusItem(BaseModel):
+    product_id: int
+    product_name: str
+    quantity: int
+    unit_price: float
+    subtotal: float
+    modifier_names: Optional[str] = None
+    modifiers: List[OrderStatusItemModifier] = []
+    class Config:
+        from_attributes = True
+
 class OrderStatusResponse(BaseModel):
     id: int
     order_number: str
     status: str
     customer_name: Optional[str] = None
+    order_type: Optional[str] = None
+    payment_method: Optional[str] = None
+    notes: Optional[str] = None
+    subtotal: float = 0
+    discount: float = 0
     total: float
+    promo_name: Optional[str] = None
+    points_redeemed: int = 0
+    points_earned: int = 0
     created_at: Optional[datetime] = None
     payment_token: Optional[str] = None
     payment_url: Optional[str] = None
+    items: List[OrderStatusItem] = []
     class Config:
         from_attributes = True
+
+class LastOrderItems(BaseModel):
+    """Item dari pesanan terakhir member, untuk tombol "Pesan lagi"."""
+    ordered_at: Optional[datetime] = None
+    items: List[OrderStatusItem] = []
 
 class OrderConfirm(BaseModel):
     payment_method: Optional[str] = None

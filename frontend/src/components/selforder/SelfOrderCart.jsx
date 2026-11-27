@@ -1,111 +1,85 @@
-import { X, Minus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import { formatRupiah } from '../../utils/format';
+import { NO_DISCOUNT, discountFor, optionSummary } from '../../utils/selfOrder';
+import { ProductThumb, Stepper } from './ui';
 
-export default function SelfOrderCart({ cart, onClose, onUpdateQty, onRemoveItem, onCheckout }) {
-  const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
+/** Panel keranjang yang selalu terlihat di laptop (≥1024px). */
+export default function SelfOrderCart({ cart, promos, discount, member, onQty, onDiscountChange, onCheckout }) {
+  const subtotal = cart.reduce((s, c) => s + c.subtotal, 0);
+  const itemCount = cart.reduce((s, c) => s + c.qty, 0);
+  const points = member?.points || 0;
+  const cut = discountFor(discount, subtotal, promos, points);
+  const total = Math.max(subtotal - cut.amount, 0);
+  const suggested = discount.kind === 'none' ? promos[0] : null;
 
   return (
-    <>
-      {/* Overlay */}
-      <div 
-        className="fixed inset-0 bg-black/60 z-[100] backdrop-blur-sm animate-in fade-in duration-200"
-        onClick={onClose}
-      />
-      
-      {/* Bottom Sheet */}
-      <div 
-        className="fixed bottom-0 left-0 right-0 max-w-[500px] mx-auto bg-surface rounded-t-3xl z-[101] flex flex-col h-[85vh] shadow-[0_-10px_40px_rgba(0,0,0,0.5)] animate-in slide-in-from-bottom duration-300 border-x border-t border-white/5"
-      >
-        {/* Handle */}
-        <div className="flex justify-center p-3 shrink-0">
-          <div className="w-10 h-1.5 bg-white/10 rounded-full" />
-        </div>
+    <aside aria-label="Pesanan kamu" className="w-[360px] shrink-0 bg-paper border-l border-line flex flex-col sticky top-[75px] h-[calc(100dvh-75px)]">
+      <div className="px-[22px] pt-5 pb-2 flex items-baseline justify-between">
+        <h2 className="m-0 font-bold text-[20px]">Pesanan kamu</h2>
+        <span className="text-[13px] text-ink-soft">{itemCount} item</span>
+      </div>
 
-        {/* Header */}
-        <div className="px-5 pb-4 border-b border-white/5 flex justify-between items-center shrink-0">
-          <h3 className="text-xl font-bold flex items-center gap-2 text-text-primary">
-            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-              <ShoppingCart size={16} />
+      <div className="px-[22px] flex-1 overflow-y-auto min-h-0">
+        {cart.length === 0 ? (
+          <p className="mt-6 text-[14px] text-ink-soft leading-normal">Belum ada pesanan. Pilih menu, lalu tekan tombol + untuk menambah.</p>
+        ) : cart.map(item => (
+          <div key={item.cartKey} className="flex gap-3 py-3 border-b border-line-soft items-center">
+            <ProductThumb src={item.product.image_url} className="w-12 h-12 rounded-[10px] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-[14px] truncate">{item.product.name}</div>
+              <div className="text-[12px] text-ink-soft truncate">{optionSummary(item) || 'Tanpa tambahan'}</div>
+              <div className="font-bold text-[13.5px] tabular-nums">{formatRupiah(item.subtotal)}</div>
             </div>
-            Keranjang
-          </h3>
-          <button 
-            onClick={onClose} 
-            className="w-8 h-8 rounded-full bg-surface-2 flex items-center justify-center text-text-secondary hover:text-white hover:bg-white/10 transition-colors"
-          >
-            <X size={18} />
-          </button>
-        </div>
+            <Stepper
+              value={item.qty}
+              onDec={() => onQty(item.cartKey, -1)}
+              onInc={() => onQty(item.cartKey, 1)}
+              decLabel={item.qty === 1 ? `Hapus ${item.product.name}` : `Kurangi ${item.product.name}`}
+              incLabel={`Tambah ${item.product.name}`}
+            />
+          </div>
+        ))}
 
-        {/* Body scrollable */}
-        <div className="p-5 overflow-y-auto flex-1 custom-scrollbar">
-          {cart.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-text-muted gap-4">
-              <div className="w-20 h-20 rounded-full bg-white/5 flex items-center justify-center">
-                <ShoppingCart size={40} className="opacity-20" />
-              </div>
-              <p className="font-medium">Keranjang masih kosong</p>
-            </div>
-          ) : (
-            <div className="flex flex-col gap-4">
-              {cart.map((item, idx) => (
-                <div key={item.cartKey} className="flex gap-4 bg-surface-2 p-4 rounded-2xl border border-white/5 shadow-sm">
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-[15px] font-bold text-text-primary mb-1 truncate">{item.product.name}</h4>
-                    <div className="flex flex-col gap-0.5">
-                      {item.variant && <span className="text-[12px] font-medium text-text-muted bg-white/5 w-fit px-2 py-0.5 rounded-md">Varian: {item.variant.name}</span>}
-                      {item.modifiers.length > 0 && <span className="text-[12px] font-medium text-text-muted bg-white/5 w-fit px-2 py-0.5 rounded-md mt-1">Ekstra: {item.modifiers.map(m => m.name).join(', ')}</span>}
-                      {item.notes && <span className="text-[12px] text-warning italic mt-1.5">"{item.notes}"</span>}
-                    </div>
-                    <div className="text-[14px] font-black text-primary mt-3">{formatRupiah(item.subtotal)}</div>
-                  </div>
-                  
-                  <div className="flex flex-col items-end justify-between shrink-0">
-                    <button 
-                      onClick={() => onRemoveItem(idx)} 
-                      className="p-2 text-danger/70 hover:text-danger hover:bg-danger/10 rounded-lg transition-colors"
-                    >
-                      <Trash2 size={18} />
-                    </button>
-                    
-                    <div className="flex items-center gap-3 bg-surface border border-white/5 p-1 rounded-xl shadow-inner mt-2">
-                      <button 
-                        onClick={() => onUpdateQty(idx, -1)} 
-                        className="w-7 h-7 rounded-lg bg-surface-2 flex items-center justify-center text-text-primary hover:bg-surface-3 transition-colors active:scale-95"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <span className="text-[14px] font-bold min-w-[20px] text-center">{item.qty}</span>
-                      <button 
-                        onClick={() => onUpdateQty(idx, 1)} 
-                        className="w-7 h-7 rounded-lg bg-primary/10 text-primary flex items-center justify-center hover:bg-primary/20 transition-colors active:scale-95"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        {cart.length > 0 && (
-          <div className="p-5 border-t border-white/5 bg-surface shrink-0 pb-8 sm:pb-5">
-            <div className="flex justify-between items-center mb-4">
-              <span className="text-[15px] font-bold text-text-secondary">Total Pembayaran</span>
-              <span className="text-xl font-black text-primary">{formatRupiah(cartTotal)}</span>
-            </div>
-            <button 
-              className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-[0_8px_24px_rgba(200,162,122,0.4)] text-white p-4 rounded-xl font-bold text-[15px] transition-all active:scale-[0.98]" 
-              onClick={onCheckout}
-            >
-              Lanjut ke Checkout
-            </button>
+        {cart.length > 0 && discount.kind !== 'none' && (
+          <div className="mt-3.5 p-3 rounded-xl bg-sunny-soft text-[13px] flex justify-between items-center gap-3">
+            <span className="min-w-0">
+              <strong className="block truncate">{cut.label || 'Promo'}</strong>
+              {cut.error ? <span className="text-[#8A2C2C]">{cut.error}</span> : (
+                <button
+                  type="button"
+                  className="text-ink-soft underline underline-offset-2 hover:text-ink"
+                  onClick={() => onDiscountChange(discount.kind === 'promo' && points > 0 ? { kind: 'points' } : NO_DISCOUNT)}
+                >
+                  {discount.kind === 'promo' && points > 0 ? 'Ganti ke tukar poin' : 'Lepas potongan'}
+                </button>
+              )}
+            </span>
+            {cut.amount > 0 && <span className="font-bold tabular-nums">−{formatRupiah(cut.amount)}</span>}
           </div>
         )}
+        {cart.length > 0 && suggested && (
+          <button
+            type="button"
+            onClick={() => onDiscountChange({ kind: 'promo', promoId: suggested.id })}
+            className="mt-3.5 w-full p-3 rounded-xl border border-dashed border-line-strong text-left text-[13px] hover:border-ink-faint"
+          >
+            Ada promo <strong>{suggested.name}</strong>. <span className="underline underline-offset-2">Pakai</span>
+          </button>
+        )}
       </div>
-    </>
+
+      <div className="px-[22px] pt-4 pb-[22px] border-t border-line text-[14px]">
+        <div className="flex justify-between py-[3px]"><span className="text-ink-soft">Subtotal</span><span className="tabular-nums">{formatRupiah(subtotal)}</span></div>
+        {cut.amount > 0 && <div className="flex justify-between py-[3px]"><span className="text-ink-soft">Potongan</span><span className="tabular-nums">−{formatRupiah(cut.amount)}</span></div>}
+        <div className="flex justify-between pt-2 pb-3 font-bold text-[18px]"><span>Total</span><span className="tabular-nums">{formatRupiah(total)}</span></div>
+        <button
+          type="button"
+          onClick={onCheckout}
+          disabled={cart.length === 0}
+          className="w-full flex items-center justify-center min-h-[54px] rounded-[14px] bg-brand text-white font-bold text-[16px] disabled:opacity-40 disabled:cursor-not-allowed hover:brightness-110 transition"
+        >
+          Lanjut ke pembayaran
+        </button>
+      </div>
+    </aside>
   );
 }

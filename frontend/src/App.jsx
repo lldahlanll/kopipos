@@ -9,6 +9,7 @@ import MenuManagement from './pages/MenuManagement';
 import Categories from './pages/Categories';
 import Modifiers from './pages/Modifiers';
 import Promos from './pages/Promos';
+import Banners from './pages/Banners';
 import { homePathForRole } from './utils/roles';
 import Transactions from './pages/Transactions';
 import TransactionDetail from './pages/TransactionDetail';
@@ -67,6 +68,9 @@ function AppRoutes() {
         } />
         <Route path="promos" element={
           <ProtectedRoute allowedRoles={['owner', 'promo']}><Promos /></ProtectedRoute>
+        } />
+        <Route path="banners" element={
+          <ProtectedRoute allowedRoles={['owner', 'promo']}><Banners /></ProtectedRoute>
         } />
         <Route path="transactions" element={
           <ProtectedRoute allowedRoles={['owner', 'cashier']}><Transactions /></ProtectedRoute>

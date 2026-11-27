@@ -1,234 +1,234 @@
-import { useState, useRef } from 'react';
-import { ArrowLeft, User, MapPin, CreditCard, Send, Loader, Sparkles } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ChevronLeft, Loader } from 'lucide-react';
 import { formatRupiah } from '../../utils/format';
+import {
+  NO_DISCOUNT, POINT_VALUE, discountFor, maxRedeemablePoints, optionSummary, pointsEarned, promoTerms,
+} from '../../utils/selfOrder';
+import { calcPromoDiscount } from '../../utils/promo';
+import { ProductThumb, Stepper } from './ui';
 
-export default function SelfOrderCheckout({ cart, onBack, onSubmit, loading, tableLocked, tableNum, member }) {
-  const [customerName, setCustomerName] = useState(() => member ? member.name : (localStorage.getItem('selfOrder_customerName') || ''));
-  const [tableNumber, setTableNumber] = useState(() => tableLocked ? tableNum : (localStorage.getItem('selfOrder_tableNumber') || ''));
-  const [orderType, setOrderType] = useState('dine_in'); // dine_in | takeaway
-  const [paymentMethod, setPaymentMethod] = useState('qris'); // default to qris since default orderType is dine_in
+function Card({ title, hint, children }) {
+  return (
+    <section className="mx-[18px] mt-3 p-4 bg-paper border border-line rounded-2xl">
+      <h2 className="m-0 font-bold text-[17px]">{title}</h2>
+      {hint && <p className="mt-1 mb-2 text-[12.5px] text-ink-soft">{hint}</p>}
+      {children}
+    </section>
+  );
+}
 
-  // UUID dibuat sekali saat komponen di-mount — tetap sama walau tombol diklik berkali-kali
+function Choice({ name, checked, onChange, title, sub, amount, disabled }) {
+  return (
+    <label className={`flex items-center gap-3 min-h-14 px-3 py-2 mt-1.5 rounded-xl border transition-colors ${checked ? 'border-brand bg-brand-soft border-[1.5px]' : 'border-line'} ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-ink-faint'}`}>
+      <input type="radio" name={name} checked={checked} onChange={onChange} disabled={disabled} className="w-5 h-5 m-0 accent-brand shrink-0" />
+      <span className="flex-1 min-w-0 flex flex-col">
+        <span className="font-semibold text-[14px]">{title}</span>
+        {sub && <span className="text-[12px] text-ink-soft">{sub}</span>}
+      </span>
+      {amount ? <span className="font-bold text-[14px] tabular-nums">{amount}</span> : null}
+    </label>
+  );
+}
+
+export default function SelfOrderCheckout({
+  cart, member, storeInfo, tableNum, tableLocked, promos, discount, onDiscountChange,
+  onQty, onBack, onSubmit, loading,
+}) {
+  const [orderType, setOrderType] = useState('dine_in');
+  const [tableNumber, setTableNumber] = useState(() => tableNum || localStorage.getItem('selfOrder_tableNumber') || '');
+  const canQris = !!storeInfo.midtrans_client_key;
+  const [paymentMethod, setPaymentMethod] = useState('cashier');
   const idempotencyKey = useRef(crypto.randomUUID());
+  const top = useRef(null);
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
-  const isValid = customerName.trim().length > 0 && (orderType === 'takeaway' || tableNumber.trim().length > 0);
+  useEffect(() => {
+    top.current?.focus();
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';  // halaman menu di belakang tidak ikut tergulir
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
-  const [usePoints, setUsePoints] = useState(false);
-  const pointsAvailable = member?.points || 0;
-  const maxPointsToRedeem = Math.min(pointsAvailable, Math.floor(cartTotal / 500));
-  const pointDiscount = usePoints ? maxPointsToRedeem * 500 : 0;
-  const finalTotal = cartTotal - pointDiscount;
+  const subtotal = cart.reduce((s, c) => s + c.subtotal, 0);
+  const points = member?.points || 0;
+  const redeemable = maxRedeemablePoints(points, subtotal);
+  const cut = discountFor(discount, subtotal, promos, points);
+  const total = Math.max(subtotal - cut.amount, 0);
+  const itemCount = cart.reduce((s, c) => s + c.qty, 0);
 
-  const handleSubmit = () => {
-    if (!isValid) return;
-    
-    // Save to local storage for future convenience
-    localStorage.setItem('selfOrder_customerName', customerName);
-    if (orderType === 'dine_in') {
-      localStorage.setItem('selfOrder_tableNumber', tableNumber);
-    }
+  const needsTable = orderType === 'dine_in' && !tableNumber.trim();
+  const problem = cart.length === 0 ? 'Pesananmu masih kosong.'
+    : cut.error ? `${cut.error}. Pilih potongan lain atau tambah pesanan.`
+    : needsTable ? 'Isi nomor meja dulu.'
+    : null;
 
+  const submit = () => {
+    if (problem || loading) return;
+    if (orderType === 'dine_in') localStorage.setItem('selfOrder_tableNumber', tableNumber.trim());
     onSubmit({
-      customerName,
-      tableNumber: orderType === 'dine_in' ? tableNumber : null,
       orderType,
       paymentMethod,
-      redeemPoints: usePoints ? maxPointsToRedeem : 0,
+      tableNumber: orderType === 'dine_in' ? tableNumber.trim() : null,
+      promoId: discount.kind === 'promo' ? discount.promoId : null,
+      redeemPoints: discount.kind === 'points' ? cut.points : 0,
       idempotencyKey: idempotencyKey.current,
     });
   };
 
   return (
-    <div className="fixed inset-0 max-w-[500px] mx-auto bg-body z-[110] flex flex-col animate-in slide-in-from-bottom duration-300 shadow-2xl border-x border-white/5">
-      {/* Header */}
-      <div className="px-5 py-4 bg-surface/90 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0 shadow-sm z-10">
-        <button 
-          onClick={onBack} 
-          className="w-10 h-10 rounded-full bg-surface-2 flex items-center justify-center text-text-primary hover:bg-white/10 transition-colors active:scale-95"
-        >
-          <ArrowLeft size={20} />
-        </button>
-        <h2 className="text-lg font-bold text-text-primary">Checkout</h2>
-      </div>
+    <div className="so-root fixed inset-0 z-[90] overflow-y-auto">
+      <div className="max-w-[560px] mx-auto min-h-full flex flex-col md:border-x md:border-line">
+        <header className="sticky top-0 z-10 bg-cream flex items-center gap-2 px-2.5 py-2 border-b border-line">
+          <button ref={top} type="button" onClick={onBack} aria-label="Kembali ke menu" className="w-11 h-11 flex items-center justify-center text-ink rounded-full hover:bg-sand outline-none focus-visible:ring-2 focus-visible:ring-brand">
+            <ChevronLeft size={22} strokeWidth={2.2} />
+          </button>
+          <h1 className="m-0 flex-1 font-bold text-[20px]">Pesanan kamu</h1>
+          {orderType === 'dine_in' && tableNumber && <span className="text-[13px] text-ink-soft pr-2">Meja {tableNumber}</span>}
+        </header>
 
-      <div className="flex-1 overflow-y-auto p-5 custom-scrollbar pb-24">
-        {/* Info Pemesan */}
-        <div className="bg-surface p-5 rounded-2xl border border-white/5 mb-5 shadow-sm">
-          <h3 className="text-[15px] font-bold mb-4 flex items-center gap-2 text-text-primary">
-            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-              <User size={16} />
-            </div>
-            Info Pemesan
-          </h3>
-          <div className="flex flex-col gap-4">
-            <div>
-              <label className="text-sm font-bold text-text-secondary uppercase tracking-wider mb-2 block">
-                Nama Panggilan <span className="text-danger">*</span>
-              </label>
-              <input 
-                type="text" 
-                className="w-full bg-surface-2 border border-white/5 rounded-xl p-4 text-[15px] font-medium text-text-primary placeholder-text-muted focus:border-primary/50 focus:ring-1 focus:ring-primary/50 outline-none transition-all"
-                placeholder="Masukkan nama Anda..."
-                value={customerName}
-                onChange={e => setCustomerName(e.target.value)}
+        <section className="px-[18px] pt-1.5" aria-label="Daftar pesanan">
+          {cart.map(item => (
+            <div key={item.cartKey} className="flex gap-3 py-3.5 border-b border-line items-center">
+              <ProductThumb src={item.product.image_url} className="w-14 h-14 rounded-[10px] shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-[14.5px] leading-snug">{item.product.name}</div>
+                <div className="text-[12px] text-ink-soft mt-0.5">{optionSummary(item) || 'Tanpa tambahan'}</div>
+                {item.notes && <div className="text-[12px] text-ink-soft italic">“{item.notes}”</div>}
+                <div className="font-bold text-[14px] mt-1 tabular-nums">{formatRupiah(item.subtotal)}</div>
+              </div>
+              <Stepper
+                value={item.qty}
+                onDec={() => onQty(item.cartKey, -1)}
+                onInc={() => onQty(item.cartKey, 1)}
+                decLabel={item.qty === 1 ? `Hapus ${item.product.name}` : `Kurangi ${item.product.name}`}
+                incLabel={`Tambah ${item.product.name}`}
               />
             </div>
-            {orderType === 'dine_in' && (
-              <div className="animate-in slide-in-from-top-2 fade-in duration-200">
-                <label className="text-sm font-bold text-text-secondary uppercase tracking-wider mb-2 block">
-                  Nomor Meja <span className="text-danger">*</span>
-                </label>
-                <input 
-                  type="text" 
-                  className={`w-full bg-surface-2 border border-white/5 rounded-xl p-4 text-[15px] font-medium text-text-primary placeholder-text-muted focus:border-primary/50 focus:ring-1 focus:ring-primary/50 outline-none transition-all ${tableLocked ? 'opacity-60 cursor-not-allowed bg-surface-3' : ''}`}
-                  placeholder="Contoh: 12"
+          ))}
+          <button type="button" onClick={onBack} className="inline-flex items-center min-h-11 text-[14px] font-bold text-brand hover:underline">
+            + Tambah menu lain
+          </button>
+        </section>
+
+        <Card title="Atas nama">
+          <p className="mt-2 text-[15px] font-semibold">{member?.name}</p>
+          <p className="text-[12.5px] text-ink-soft">Nama ini yang dipanggil barista.</p>
+          <div role="radiogroup" aria-label="Tipe pesanan" className="grid grid-cols-2 gap-2 mt-3">
+            {[['dine_in', 'Makan di sini'], ['takeaway', 'Bawa pulang']].map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={orderType === id}
+                onClick={() => setOrderType(id)}
+                className={`min-h-12 rounded-[10px] font-semibold text-[14px] border transition-colors ${orderType === id ? 'bg-ink text-white border-ink' : 'border-line-strong hover:border-ink-faint'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {orderType === 'dine_in' && (
+            tableLocked ? (
+              <p className="mt-2.5 text-[12.5px] text-ink-soft">Meja {tableNumber}, dari QR di mejamu.</p>
+            ) : (
+              <div className="mt-3">
+                <label htmlFor="so-meja" className="block text-[13px] font-semibold text-ink-soft">Nomor meja</label>
+                <input
+                  id="so-meja"
+                  inputMode="numeric"
+                  maxLength={10}
                   value={tableNumber}
                   onChange={e => setTableNumber(e.target.value)}
-                  disabled={tableLocked}
+                  placeholder="Lihat angka di mejamu"
+                  className="box-border w-full h-12 mt-1.5 px-3 border border-line-strong rounded-[10px] text-[15px] bg-paper-2 outline-none focus:border-brand"
                 />
-                {tableLocked && (
-                  <p className="text-[11px] text-primary/75 mt-1.5 font-medium">
-                    🔒 Nomor meja terkunci otomatis sesuai QR Code meja Anda.
-                  </p>
-                )}
               </div>
-            )}
-          </div>
-        </div>
-
-        {/* Tipe Pesanan */}
-        <div className="bg-surface p-5 rounded-2xl border border-white/5 mb-5 shadow-sm">
-          <h3 className="text-[15px] font-bold mb-4 flex items-center gap-2 text-text-primary">
-            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-              <MapPin size={16} />
-            </div>
-            Tipe Pesanan
-          </h3>
-          <div className="grid grid-cols-2 gap-3">
-            <button 
-              onClick={() => {
-                setOrderType('dine_in');
-                setPaymentMethod('qris');
-              }}
-              className={`p-4 rounded-xl border text-[14px] font-bold transition-all active:scale-[0.98] ${orderType === 'dine_in' ? 'border-primary bg-primary/10 text-primary shadow-md' : 'border-white/5 bg-surface-2 text-text-primary hover:border-white/10 hover:bg-surface-3'}`}
-            >
-              Dine In
-            </button>
-            <button 
-              onClick={() => setOrderType('takeaway')}
-              className={`p-4 rounded-xl border text-[14px] font-bold transition-all active:scale-[0.98] ${orderType === 'takeaway' ? 'border-primary bg-primary/10 text-primary shadow-md' : 'border-white/5 bg-surface-2 text-text-primary hover:border-white/10 hover:bg-surface-3'}`}
-            >
-              Takeaway
-            </button>
-          </div>
-        </div>
-
-        {/* Metode Pembayaran */}
-        <div className="bg-surface p-5 rounded-2xl border border-white/5 mb-5 shadow-sm">
-          <h3 className="text-[15px] font-bold mb-4 flex items-center gap-2 text-text-primary">
-            <div className="w-8 h-8 rounded-full bg-primary/10 text-primary flex items-center justify-center">
-              <CreditCard size={16} />
-            </div>
-            Metode Pembayaran
-          </h3>
-          <div className="flex flex-col gap-3">
-            {[
-              { id: 'cashier', name: 'Bayar di Kasir', desc: 'Pesan sekarang, bayar cash/kartu di kasir' },
-              { id: 'qris', name: 'QRIS', desc: 'Scan barcode (konfirmasi kasir manual)' },
-              { id: 'transfer', name: 'Transfer Bank', desc: 'Transfer manual ke rekening toko' }
-            ].map(method => {
-              const isSelected = paymentMethod === method.id;
-              return (
-                <label 
-                  key={method.id} 
-                  onClick={() => setPaymentMethod(method.id)}
-                  className={`flex items-center p-4 border rounded-xl transition-all cursor-pointer active:scale-[0.98] ${isSelected ? 'border-primary bg-primary/10 shadow-md' : 'border-white/5 bg-surface-2 hover:border-white/10 hover:bg-surface-3'}`}
-                >
-                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center mr-4 transition-colors shrink-0 ${isSelected ? 'border-primary' : 'border-text-muted'}`}>
-                    {isSelected && <div className="w-2.5 h-2.5 rounded-full bg-primary" />}
-                  </div>
-                  <div>
-                    <div className={`text-[15px] font-bold mb-0.5 ${isSelected ? 'text-primary' : 'text-text-primary'}`}>{method.name}</div>
-                    <div className="text-[12px] font-medium text-text-muted">{method.desc}</div>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Loyalty Point Redemption */}
-        {pointsAvailable > 0 && (
-          <div className="bg-surface p-5 rounded-2xl border border-white/5 mb-5 shadow-sm space-y-4">
-            <h3 className="text-[15px] font-bold flex items-center gap-2 text-text-primary">
-              <div className="w-8 h-8 rounded-full bg-amber-500/10 text-amber-500 flex items-center justify-center">
-                <Sparkles size={16} />
-              </div>
-              Tukarkan Poin Loyalty
-            </h3>
-            <div className="flex items-center justify-between p-3.5 bg-surface-2 rounded-xl border border-white/5">
-              <div>
-                <div className="text-xs font-bold text-text-primary">Gunakan Poin Anda</div>
-                <div className="text-[10px] font-medium text-text-muted mt-0.5">
-                  Miliki 🪙 {pointsAvailable} Poin (Maks. Tukar: {maxPointsToRedeem} Poin)
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setUsePoints(!usePoints)}
-                disabled={maxPointsToRedeem === 0}
-                className={`w-12 h-6 rounded-full p-1 transition-colors relative flex items-center ${usePoints ? 'bg-primary' : 'bg-white/10'} ${maxPointsToRedeem === 0 ? 'opacity-50 cursor-not-allowed' : ''}`}
-              >
-                <div className={`w-4 h-4 rounded-full bg-white shadow-md transition-transform duration-200 ${usePoints ? 'translate-x-6' : 'translate-x-0'}`} />
-              </button>
-            </div>
-            {usePoints && maxPointsToRedeem > 0 && (
-              <p className="text-[11px] text-amber-500 font-medium leading-relaxed">
-                🎉 Menggunakan {maxPointsToRedeem} Poin. Anda mendapatkan potongan harga senilai <strong>{formatRupiah(pointDiscount)}</strong>!
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Rincian Total */}
-        <div className="bg-surface p-5 rounded-2xl border border-white/5 mb-5 shadow-sm space-y-3">
-          <div className="flex justify-between items-center text-sm font-medium text-text-secondary">
-            <span>Subtotal ({cart.length} item)</span>
-            <span>{formatRupiah(cartTotal)}</span>
-          </div>
-          {pointDiscount > 0 && (
-            <div className="flex justify-between items-center text-sm font-medium text-amber-500">
-              <span>Diskon Poin</span>
-              <span>-{formatRupiah(pointDiscount)}</span>
-            </div>
+            )
           )}
-          <div className="flex justify-between items-center pt-4 mt-1 border-t border-dashed border-white/10">
-            <span className="font-bold text-[16px] text-text-primary">Total Pembayaran</span>
-            <span className="font-black text-[18px] text-primary">{formatRupiah(finalTotal)}</span>
-          </div>
-        </div>
-      </div>
+        </Card>
 
-      {/* Footer Fixed */}
-      <div className="p-5 bg-surface border-t border-white/5 shrink-0 shadow-[0_-4px_24px_rgba(0,0,0,0.2)] z-10">
-        <button 
-          className="w-full bg-gradient-to-r from-primary to-accent hover:shadow-[0_8px_24px_rgba(200,162,122,0.4)] text-white p-4 rounded-xl font-bold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50 disabled:shadow-none disabled:active:scale-100 flex items-center justify-center gap-3" 
-          onClick={handleSubmit} 
-          disabled={!isValid || loading}
-        >
-          {loading ? (
-            <Loader size={20} className="animate-spin" />
-          ) : (
-            <Send size={20} />
+        <Card title="Potongan harga" hint="Pilih satu: promo atau tukar poin.">
+          {promos.map(p => {
+            const { discount: amt, error } = calcPromoDiscount(p, subtotal);
+            const checked = discount.kind === 'promo' && discount.promoId === p.id;
+            return (
+              <Choice
+                key={p.id}
+                name="so-hemat"
+                checked={checked}
+                onChange={() => onDiscountChange({ kind: 'promo', promoId: p.id })}
+                title={p.name}
+                sub={error || promoTerms(p) || 'Promo dari banner'}
+                amount={!error && amt > 0 ? `−${formatRupiah(amt)}` : null}
+                disabled={!!error && !checked}
+              />
+            );
+          })}
+          {points > 0 && (
+            <Choice
+              name="so-hemat"
+              checked={discount.kind === 'points'}
+              onChange={() => onDiscountChange({ kind: 'points' })}
+              title={redeemable === points ? `Tukar ${points} poin` : `Tukar ${redeemable} dari ${points} poin`}
+              sub={`1 poin = ${formatRupiah(POINT_VALUE)}`}
+              amount={redeemable > 0 ? `−${formatRupiah(redeemable * POINT_VALUE)}` : null}
+              disabled={redeemable === 0}
+            />
           )}
-          <span>{loading ? 'Memproses Pesanan...' : 'Kirim Pesanan Sekarang'}</span>
-        </button>
-        {!isValid && (
-          <p className="text-center text-danger text-[12px] mt-3 font-medium animate-pulse">
-            * Silakan lengkapi Info Pemesan (Nama & Nomor Meja) terlebih dahulu
-          </p>
-        )}
+          <Choice
+            name="so-hemat"
+            checked={discount.kind === 'none'}
+            onChange={() => onDiscountChange(NO_DISCOUNT)}
+            title="Tanpa potongan"
+            sub={points > 0 ? 'Simpan poin untuk nanti' : null}
+          />
+        </Card>
+
+        <Card title="Bayar">
+          <Choice
+            name="so-bayar"
+            checked={paymentMethod === 'cashier'}
+            onChange={() => setPaymentMethod('cashier')}
+            title="Bayar di kasir"
+            sub="Tunai, QRIS, atau transfer saat ambil pesanan"
+          />
+          {canQris && (
+            <Choice
+              name="so-bayar"
+              checked={paymentMethod === 'qris'}
+              onChange={() => setPaymentMethod('qris')}
+              title="QRIS sekarang"
+              sub="Bayar dari HP, pesanan langsung diproses"
+            />
+          )}
+        </Card>
+
+        <section className="mx-[18px] mt-3 px-0.5 py-1 text-[14px]" aria-label="Ringkasan">
+          <div className="flex justify-between py-1"><span className="text-ink-soft">Subtotal · {itemCount} item</span><span className="tabular-nums">{formatRupiah(subtotal)}</span></div>
+          {cut.amount > 0 && (
+            <div className="flex justify-between py-1"><span className="text-ink-soft">{cut.label}</span><span className="tabular-nums">−{formatRupiah(cut.amount)}</span></div>
+          )}
+          <div className="flex justify-between pt-2 mt-1 border-t border-dashed border-line-strong font-bold text-[17px]"><span>Total</span><span className="tabular-nums">{formatRupiah(total)}</span></div>
+          {pointsEarned(total) > 0 && (
+            <div className="mt-1.5 text-[12.5px] text-brand font-semibold">+{pointsEarned(total)} poin setelah pesanan dibayar</div>
+          )}
+        </section>
+
+        <div className="h-6 flex-1" />
+        <div className="sticky bottom-0 px-[18px] pt-3 pb-[max(18px,env(safe-area-inset-bottom))] bg-cream border-t border-line">
+          {problem && <p className="mb-2 text-[12.5px] text-[#8A2C2C] font-medium" role="status">{problem}</p>}
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!!problem || loading}
+            className="w-full flex items-center justify-between min-h-14 px-[18px] rounded-[14px] bg-brand text-white font-bold text-[16px] disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 transition"
+          >
+            <span className="flex items-center gap-2">
+              {loading && <Loader size={18} className="animate-spin" />}
+              {loading ? 'Mengirim pesanan…' : 'Pesan sekarang'}
+            </span>
+            <span className="tabular-nums">{formatRupiah(total)}</span>
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -1260,3 +1260,94 @@ def test_midtrans_callback_processed_once():
 
     bad = {**body, "signature_key": "0" * 128}
     assert client.post("/api/public/payments/midtrans-callback", json=bad).status_code == 403
+
+
+# ── Banner self-order & promo untuk pelanggan ──────────────────────────────
+
+def _simple_menu_item():
+    """Produk aktif + pilihan wajib minimal agar order self-order valid."""
+    p = client.get("/api/public/menu").json()["products"][0]
+    mod_ids = []
+    for g in p.get("modifier_groups", []):
+        if g["required"] and g["modifiers"]:
+            mod_ids.append(g["modifiers"][0]["id"])
+    return {"product_id": p["id"], "quantity": 1, "modifier_ids": mod_ids or None}
+
+
+def test_banner_management_roles_and_validation():
+    cashier = _headers_for("test_cashier_banner@kopipos.com", "cashier")
+    promo_team = _headers_for("test_promo_banner@kopipos.com", "promo")
+    promo = client.post("/api/promos", json={"name": "Banner Promo A", "discount_type": "percent",
+                                             "value": 10}, headers=promo_team).json()
+
+    partner = {"kind": "partner", "title": "Brand Teh", "sponsor_name": "PT Teh",
+               "link_url": "https://contoh.id/teh", "placement": "both"}
+    assert client.post("/api/banners", json=partner, headers=cashier).status_code == 403
+    r = client.post("/api/banners", json=partner, headers=promo_team)
+    assert r.status_code == 201, r.json()
+    assert r.json()["is_running"] is True
+
+    # Tautan berbahaya dan banner promo tanpa promo ditolak
+    assert client.post("/api/banners", json={**partner, "link_url": "javascript:alert(1)"},
+                       headers=promo_team).status_code == 422
+    assert client.post("/api/banners", json={"kind": "promo", "title": "Tanpa promo"},
+                       headers=promo_team).status_code == 422
+    assert client.post("/api/banners", json={"kind": "promo", "title": "Promo hilang", "promo_id": 999999},
+                       headers=promo_team).status_code == 400
+
+    pb = client.post("/api/banners", json={"kind": "promo", "title": "Diskon 10%", "promo_id": promo["id"]},
+                     headers=promo_team).json()
+    menu = client.get("/api/public/banners?placement=menu").json()
+    ids = {b["id"] for b in menu}
+    assert r.json()["id"] in ids and pb["id"] in ids
+    shown = next(b for b in menu if b["id"] == pb["id"])
+    assert shown["promo"]["id"] == promo["id"]
+    assert "created_by" not in shown
+
+    # Promo dinonaktifkan → banner promonya tidak tayang
+    client.put(f"/api/promos/{promo['id']}", json={"is_active": False}, headers=promo_team)
+    assert pb["id"] not in {b["id"] for b in client.get("/api/public/banners").json()}
+
+    # Banner partner hanya di "status" tidak muncul di menu
+    client.put(f"/api/banners/{r.json()['id']}", json={"placement": "status"}, headers=promo_team)
+    assert r.json()["id"] not in {b["id"] for b in client.get("/api/public/banners?placement=menu").json()}
+    assert r.json()["id"] in {b["id"] for b in client.get("/api/public/banners?placement=status").json()}
+
+    assert client.delete(f"/api/banners/{r.json()['id']}", headers=promo_team).status_code == 200
+    # Promo yang dihapus ikut menghapus banner promonya
+    assert client.delete(f"/api/promos/{promo['id']}", headers=promo_team).status_code == 200
+    assert client.put(f"/api/banners/{pb['id']}", json={"title": "x y"}, headers=promo_team).status_code == 404
+
+
+def test_self_order_promo_requires_running_banner_and_excludes_points():
+    owner = _headers_for("test_owner_banner2@kopipos.com", "owner")
+    m_headers, _ = _member_headers()
+    item = _simple_menu_item()
+    base = {"customer_name": "x", "order_type": "takeaway", "payment_method": "cashier", "items": [item]}
+
+    promo = client.post("/api/promos", json={"name": "Nugas 50", "discount_type": "percent", "value": 50},
+                        headers=owner).json()
+    # Tanpa banner: promo khusus kasir, pelanggan tidak bisa memakainya
+    r = client.post("/api/public/orders", json={**base, "promo_id": promo["id"]}, headers=m_headers)
+    assert r.status_code == 400
+
+    client.post("/api/banners", json={"kind": "promo", "title": "Nugas", "promo_id": promo["id"]}, headers=owner)
+    r = client.post("/api/public/orders", json={**base, "promo_id": promo["id"], "redeem_points": 1},
+                    headers=m_headers)
+    assert r.status_code == 400
+    assert "salah satu" in r.json()["detail"]
+
+    r = client.post("/api/public/orders", json={**base, "promo_id": promo["id"]}, headers=m_headers)
+    assert r.status_code == 201, r.json()
+    o = r.json()
+    assert o["promo_name"] == "Nugas 50"
+    assert o["discount"] == round(o["subtotal"] * 0.5)
+    assert o["total"] == o["subtotal"] - o["discount"]
+    assert o["items"] and o["items"][0]["product_id"] == item["product_id"]
+
+    status = client.get(f"/api/public/orders/{o['id']}/status", headers=m_headers).json()
+    assert status["payment_method"] == "cashier" and status["items"][0]["quantity"] == 1
+
+    last = client.get("/api/public/orders/last-items", headers=m_headers).json()
+    assert last["items"][0]["product_id"] == item["product_id"]
+    assert client.get("/api/public/orders/last-items").status_code == 401

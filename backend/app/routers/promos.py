@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Order, Promo, User
+from app.models import Banner, Order, Promo, User
 from app.schemas.promo import PromoCreate, PromoOut, PromoUpdate, check_promo_values
 from app.services import PromoService
 from app.utils.auth import require_pos_access, require_promo_manager
@@ -77,6 +77,8 @@ def delete_promo(promo_id: int, db: Session = Depends(get_db), current_user: Use
             status_code=400,
             detail="Promo sudah dipakai di transaksi. Nonaktifkan saja agar riwayat tetap utuh.",
         )
+    # Banner promonya ikut terhapus (tidak bergantung pada ON DELETE CASCADE di DB)
+    db.query(Banner).filter(Banner.promo_id == promo_id).delete(synchronize_session=False)
     db.delete(promo)
     db.commit()
     return {"message": "Promo dihapus"}

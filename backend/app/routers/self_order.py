@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session, selectinload, joinedload
 from sqlalchemy import func
 from app.database import get_db
 from app.models import Product, Category, Modifier, Member, Order, OrderItem, OrderItemModifier, Shift, ProductModifierGroup, ModifierGroup, Setting, IdempotencyKey
-from app.schemas.order import OrderItemCreate, OrderStatusResponse, SelfOrderCreate
+from app.schemas.order import LastOrderItems, OrderItemCreate, OrderStatusResponse, SelfOrderCreate
 from app.utils.auth import get_current_member
 from app.limiter import limiter
-from app.services import ValidationService, PricingService, MIDTRANS_PUBLIC_ERROR
+from app.services import BannerService, PromoService, ValidationService, PricingService, MIDTRANS_PUBLIC_ERROR
 from app.utils.order import add_member_points, insert_order_with_number, lock_order, redeem_member_points
 
 router = APIRouter(prefix="/api/public", tags=["Public"])
@@ -260,10 +260,16 @@ def create_self_order(
             ))
         order_items.append(oi)
 
-    # Calculate discount from redeemed points
+    # Potongan: promo dari banner ATAU tukar poin, tidak bisa keduanya
     discount_val = 0.0
     redeem_points_actual = 0
-    if data.redeem_points and data.redeem_points > 0:
+    promo = None
+    if data.promo_id is not None:
+        if data.redeem_points and data.redeem_points > 0:
+            raise HTTPException(status_code=400, detail="Pilih salah satu: promo atau tukar poin")
+        promo = BannerService.self_order_promo(db, data.promo_id)
+        discount_val = PromoService.calculate_discount(promo, subtotal)
+    elif data.redeem_points and data.redeem_points > 0:
         if current_member.points < data.redeem_points:
             raise HTTPException(status_code=400, detail="Saldo poin tidak mencukupi")
         
@@ -290,7 +296,9 @@ def create_self_order(
         total=final_total,
         member_id=current_member.id,
         points_redeemed=redeem_points_actual,
-        points_earned=earned_points
+        points_earned=earned_points,
+        promo_id=promo.id if promo else None,
+        promo_name=promo.name if promo else None,
     )
     # Nomor order dibuat dulu (retry-nya me-rollback session), baru poin dipotong.
     insert_order_with_number(db, order)
@@ -339,7 +347,7 @@ def create_self_order(
                     "id": "discount",
                     "price": -int(discount_val),
                     "quantity": 1,
-                    "name": "Diskon Poin"
+                    "name": (f"Promo {promo.name}" if promo else "Diskon Poin")[:50]
                 })
                 
             snap_res = MidtransService.create_transaction(
@@ -385,6 +393,20 @@ def get_self_order_status(id: int, db: Session = Depends(get_db), current_member
     if not order:
         raise HTTPException(status_code=404, detail="Order tidak ditemukan")
     return order
+
+@router.get("/orders/last-items", response_model=LastOrderItems)
+def get_last_order_items(db: Session = Depends(get_db), current_member: Member = Depends(get_current_member)):
+    """Item dari pesanan terakhir yang tidak batal, untuk "Pesan lagi" di menu."""
+    order = (
+        db.query(Order)
+        .options(selectinload(Order.items).selectinload(OrderItem.modifiers))
+        .filter(Order.member_id == current_member.id, Order.status != "cancelled")
+        .order_by(Order.created_at.desc(), Order.id.desc())
+        .first()
+    )
+    if not order:
+        return LastOrderItems()
+    return LastOrderItems(ordered_at=order.created_at, items=order.items[:3])
 
 @router.get("/orders", response_model=List[OrderStatusResponse])
 def get_member_orders(db: Session = Depends(get_db), current_member: Member = Depends(get_current_member)):

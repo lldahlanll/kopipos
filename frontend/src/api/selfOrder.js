@@ -15,3 +15,5 @@ export const registerMember = (data) => publicClient.post('/member/register', da
 export const loginMember = (data) => publicClient.post('/member/login', data);
 export const getMemberProfile = () => publicClient.get('/member/profile');
 export const getMemberOrders = () => publicClient.get('/public/orders');
+export const getLastOrderItems = () => publicClient.get('/public/orders/last-items');
+export const getPublicBanners = (placement) => publicClient.get('/public/banners', { params: placement ? { placement } : {} });
